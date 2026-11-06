@@ -34,6 +34,12 @@ export function csvCell(value: unknown): string {
 const dateFormat = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", year: "numeric" });
 export const longDate = (value: string) => dateFormat.format(new Date(value)).replace(/\s*г\.$/, "");
 
+const moneyFormat = new Intl.NumberFormat("ru-RU");
+export const money = (value: number) => `${moneyFormat.format(value)} сум`;
+/** Число для поля ввода: «800 000». Ноль показываем пустым полем. */
+export const moneyInput = (value: number) => (value ? moneyFormat.format(value) : "");
+export const parseMoney = (value: string) => Number(value.replace(/\D/g, "")) || 0;
+
 const dayMs = 86_400_000;
 
 export function daysLeft(until: string): number {

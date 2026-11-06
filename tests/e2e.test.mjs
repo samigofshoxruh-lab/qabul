@@ -905,3 +905,111 @@ test("Продление компании доходит до владельца
   assert.equal(added.user_id.length > 0, true);
   assert.equal((await invoke(owner.client, "platform", { action: "clear_user_terms", workspace_id: owner.workspace })).status, 403);
 });
+
+async function clientOnLesson(owner, chatId, minutes, platform = "telegram") {
+  const { data: channel } = await owner.client.from("channels").select("id").eq("platform", platform).is("deleted_at", null).single();
+  const { data: contact } = await owner.client.from("contacts").select("id").eq("external_id", chatId).single();
+  const { data: lesson } = await owner.client.from("lessons").insert({
+    workspace_id: owner.workspace, title: "Английский A1", starts_at: new Date(Date.now() + minutes * 60000).toISOString(),
+  }).select().single();
+  const { data: student, error } = await owner.client.from("lesson_students").insert({
+    workspace_id: owner.workspace, lesson_id: lesson.id, contact_id: contact.id, name: "Анна",
+  }).select().single();
+  assert.equal(error, null);
+  return { channel, lesson, student };
+}
+const cron = (name) => fetch(fn(name), { method: "POST", headers: { "x-cron-secret": CRON_SECRET } });
+
+test("Напоминание об уроке доходит через бота, видно в переписке и в уроке, ошибка клиента не ломает канал", async () => {
+  const owner = await newOwner();
+  const res = await invoke(owner.client, "channels", { action: "connect", workspace_id: owner.workspace, platform: "telegram", token: "111:TOKEN" });
+  const secret = (await secretOf(res.channel.id)).webhook_secret;
+  const say = (chatId, text, id) => fetch(fn("webhook", `/${res.channel.id}`), {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-telegram-bot-api-secret-token": secret },
+    body: JSON.stringify({ update_id: id, message: { message_id: id, chat: { id: chatId, type: "private" }, from: { id: chatId, first_name: "Анна" }, text } }),
+  });
+  await say(5551, "Привет", 1);
+  await say(5552, "Привет", 2);
+
+  assert.equal((await fetch(fn("reminders"), { method: "POST" })).status, 401);
+  assert.equal((await fetch(fn("reminders"), { method: "POST", headers: { "x-cron-secret": "wrong" } })).status, 401);
+
+  const { student } = await clientOnLesson(owner, "5551", 600);
+  const blocked = await clientOnLesson(owner, "5552", 45);
+  await mock.reset();
+  await mock.fail("sendMessage", 403, { ok: false, error_code: 403, description: "Forbidden: bot was blocked by the user" });
+  await cron("reminders");
+  await mock.reset();
+
+  const { data: failed } = await owner.client.from("lesson_reminders").select("kind, error, messages(status, error)").eq("student_id", blocked.student.id).single();
+  assert.equal(failed.kind, "hour");
+  assert.equal(failed.messages.status, "failed");
+  assert.match(failed.messages.error, /заблокировал бота/);
+  const { data: healthy } = await owner.client.from("channels").select("last_error").single();
+  assert.equal(healthy.last_error, null, "блокировка одним клиентом не значит, что канал сломан");
+
+  // Второй запуск ничего не отправляет повторно.
+  assert.equal((await (await cron("reminders")).json()).sent, 0);
+  assert.equal((await sent("telegram", "sendMessage")).length, 0);
+
+  // Успешная доставка.
+  const fresh = await clientOnLesson(owner, "5551", 30);
+  assert.equal((await (await cron("reminders")).json()).sent, 1);
+  const out = await sent("telegram", "sendMessage");
+  assert.equal(out.length, 1);
+  assert.equal(String(out[0].body.chat_id), "5551");
+  assert.match(out[0].body.text, /^Скоро начало: /);
+  assert.match(out[0].body.text, /Английский A1/);
+  const { data: delivered } = await owner.client.from("lesson_reminders").select("messages(status, sender, text)").eq("student_id", fresh.student.id).single();
+  assert.equal(delivered.messages.status, "sent");
+  assert.equal(delivered.messages.sender, "bot");
+  assert.ok(student.id);
+});
+
+test("Проверка каналов: отозванный токен виден владельцу, сбой сети тревогу не поднимает, починка её снимает", async () => {
+  const owner = await newOwner();
+  await invoke(owner.client, "channels", { action: "connect", workspace_id: owner.workspace, platform: "telegram", token: "111:TOKEN" });
+  const row = async () => (await owner.client.from("channels").select("last_error").single()).data.last_error;
+
+  assert.equal((await (await cron("refresh-tokens")).json()).broken, 0);
+  assert.equal(await row(), null);
+
+  // Telegram сам временно недоступен: это не поломка токена.
+  await mock.fail("getMe", 500, { ok: false, description: "Internal Server Error" });
+  assert.equal((await (await cron("refresh-tokens")).json()).broken, 0);
+  assert.equal(await row(), null);
+
+  await mock.reset();
+  await mock.fail("getMe", 401, { ok: false, error_code: 401, description: "Unauthorized" });
+  assert.equal((await (await cron("refresh-tokens")).json()).broken, 1);
+  assert.match(await row(), /^Проверка токена не прошла: Telegram не принял токен/);
+
+  await mock.reset();
+  await cron("refresh-tokens");
+  assert.equal(await row(), null, "токен снова работает, тревога снята");
+
+  // Чужую ошибку (например, отправки) проверка токена не стирает.
+  await stack.db.query("update channels set last_error = 'Ошибка отправки' where workspace_id = $1", [owner.workspace]);
+  await cron("refresh-tokens");
+  assert.equal(await row(), "Ошибка отправки");
+});
+
+test("Продление токена Instagram: сбой виден владельцу, следующая удачная попытка его снимает", async () => {
+  const owner = await newOwner();
+  const res = await invoke(owner.client, "channels", { action: "connect", workspace_id: owner.workspace, platform: "instagram", token: "IG-OLD", app_secret: "s" });
+  await stack.db.query("update channels set token_expires_at = now() + interval '5 days', last_error = null where id = $1", [res.channel.id]);
+
+  await mock.fail("refresh_access_token", 400, { error: { code: 190, message: "expired" } });
+  await cron("refresh-tokens");
+  const { data: failed } = await owner.client.from("channels").select("last_error, token_hint").single();
+  assert.match(failed.last_error, /^Не удалось продлить токен: Токен недействителен/);
+  assert.equal(failed.token_hint, "••••-OLD");
+
+  await mock.reset();
+  await cron("refresh-tokens");
+  const { data: fixed } = await owner.client.from("channels").select("last_error, token_hint, token_expires_at").single();
+  assert.equal(fixed.last_error, null);
+  assert.equal(fixed.token_hint, "••••9999");
+  assert.ok(new Date(fixed.token_expires_at) > new Date(Date.now() + 50 * 86400000));
+});

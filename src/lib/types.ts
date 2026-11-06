@@ -54,6 +54,8 @@ export interface Lesson {
   starts_at: string | null;
   duration_minutes: number | null;
   notes: string | null;
+  price: number;
+  remind: boolean;
   created_at: string;
   lesson_students?: { count: number }[];
 }
@@ -65,6 +67,25 @@ export interface LessonStudent {
   name: string;
   phone: string | null;
   note: string | null;
+  attended: boolean | null;
+  price: number;
+  paid: number;
+  debt: number;
+}
+
+export interface LessonReminder {
+  student_id: string;
+  kind: "day" | "hour";
+  starts_at: string;
+  error: string | null;
+  messages: { status: Message["status"]; error: string | null } | null;
+}
+
+export interface QuickReply {
+  id: string;
+  workspace_id: string;
+  title: string;
+  text: string;
 }
 
 export interface Member {

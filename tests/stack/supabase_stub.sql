@@ -20,7 +20,7 @@ create table auth.users (
 grant usage on schema auth to supabase_auth_admin;
 grant all on auth.users to supabase_auth_admin;
 create function auth.uid() returns uuid language sql stable as $$
-  select nullif(current_setting('request.jwt.claims', true)::jsonb ->> 'sub', '')::uuid
+  select nullif(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub', '')::uuid
 $$;
 
 grant usage on schema public to anon, authenticated, service_role;

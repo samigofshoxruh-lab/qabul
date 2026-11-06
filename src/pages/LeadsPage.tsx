@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Download, Search, Send } from "lucide-react";
 import { useApp } from "../App";
+import { QuickReplies } from "../components/QuickReplies";
 import { ChannelTag, Empty, ErrorNote } from "../components/ui";
-import { contactName, csvCell, fullTime, shortTime, STATUS_LABEL } from "../lib/format";
+import { contactName, csvCell, fullTime, money, shortTime, STATUS_LABEL } from "../lib/format";
 import { PLATFORMS } from "../lib/platforms";
 import { callFunction, errorText, supabase } from "../lib/supabase";
 import type { Answer, Lead, LeadStatus, Lesson, LessonStudent, Member, Message, Question } from "../lib/types";
@@ -259,6 +260,7 @@ function LeadLessons({ lead }: { lead: Lead }) {
   }
 
   const joinedIds = new Set(joined.map((s) => s.lesson_id));
+  const debtOf = (id: string) => joined.find((s) => s.lesson_id === id)?.debt ?? 0;
   const available = lessons.filter((l) => !joinedIds.has(l.id) && (!l.starts_at || new Date(l.starts_at).getTime() > Date.now() - 86_400_000));
 
   return (
@@ -269,6 +271,7 @@ function LeadLessons({ lead }: { lead: Lead }) {
         <Link key={l.id} to={`/lessons/${l.id}`} className="lesson-link">
           {l.title}
           {l.starts_at && <span className="muted">, {fullTime(l.starts_at)}</span>}
+          {debtOf(l.id) > 0 && <span className="debt">, долг {money(debtOf(l.id))}</span>}
         </Link>
       ))}
       {lessons.length === 0 ? (
@@ -305,6 +308,7 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
   const [sending, setSending] = useState(false);
   const chatList = useRef<HTMLOListElement>(null);
   const composer = useRef<HTMLFormElement>(null);
+  const draftInput = useRef<HTMLTextAreaElement>(null);
   const [panel, setPanel] = useState<"sheet" | "chat">("sheet");
 
   const loadDetail = useCallback(async () => {
@@ -531,8 +535,15 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
               </li>
             ))}
           </ol>
+          <QuickReplies
+            onPick={(text) => {
+              setDraft((current) => (current.trim() ? `${current.trimEnd()}\n${text}` : text));
+              draftInput.current?.focus();
+            }}
+          />
           <form className="composer" onSubmit={send} ref={composer}>
             <textarea
+              ref={draftInput}
               rows={2}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}

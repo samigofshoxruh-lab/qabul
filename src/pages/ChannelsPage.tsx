@@ -3,7 +3,8 @@ import { Link } from "react-router-dom";
 import { AlertTriangle } from "lucide-react";
 import { useApp } from "../App";
 import { ChannelTag, CopyField, ErrorNote, Modal } from "../components/ui";
-import { fullTime } from "../lib/format";
+import { CHANNELS_CHANGED, tokenExpired } from "../lib/alerts";
+import { fullTime, longDate } from "../lib/format";
 import { PLATFORM_ORDER, PLATFORMS } from "../lib/platforms";
 import { callFunction, errorText, supabase } from "../lib/supabase";
 import type { Channel, Platform, Survey } from "../lib/types";
@@ -134,7 +135,9 @@ function ConnectForm({ platform, onClose, onChanged }: { platform: Platform; onC
 
 function statusText(channel: Channel): { text: string; tone: "ok" | "wait" | "bad" } {
   if (!channel.is_active) return { text: "Бот выключен", tone: "wait" };
+  if (tokenExpired(channel)) return { text: "Токен истёк, бот не отвечает", tone: "bad" };
   if (channel.status === "error") return { text: "Ошибка подключения", tone: "bad" };
+  if (channel.last_error) return { text: "Есть проблема, бот может не отвечать", tone: "bad" };
   if (channel.last_event_at) return { text: `Работает, последнее сообщение ${fullTime(channel.last_event_at)}`, tone: "ok" };
   if (channel.status === "active") return { text: "Подключён, ждём первое сообщение", tone: "ok" };
   return { text: "Ждём настройку webhook и первое сообщение", tone: "wait" };
@@ -188,6 +191,9 @@ function ChannelRow({ channel, surveys, onChanged, onReplaceToken }: { channel: 
             {channel.username ? `, ${channel.platform === "telegram" ? "@" : ""}${channel.username.replace(/^@/, "")}` : ""}
             {channel.token_hint ? `, токен ${channel.token_hint}` : ""}
           </p>
+          {channel.platform === "instagram" && channel.token_expires_at && !tokenExpired(channel) && (
+            <p className="muted">Токен продлевается автоматически, сейчас действует до {longDate(channel.token_expires_at)}.</p>
+          )}
           <p className={`channel-status tone-${status.tone}`}>{status.text}</p>
         </div>
         <div className="channel-controls">
@@ -284,6 +290,8 @@ export function ChannelsPage() {
     }
     setChannels(c.data as Channel[]);
     setSurveys(s.data as SurveyWithCount[]);
+    // Меню и предупреждение наверху сразу узнают, что канал починили или отключили.
+    window.dispatchEvent(new Event(CHANNELS_CHANGED));
   }, [workspace.id]);
 
   useEffect(() => {

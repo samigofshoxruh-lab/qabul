@@ -12,8 +12,11 @@ enable_confirmations = false
 [functions.webhook]
 verify_jwt = false
 
-# Вызывается из pg_cron с заголовком x-cron-secret.
+# Вызываются из pg_cron с заголовком x-cron-secret.
 [functions.refresh-tokens]
+verify_jwt = false
+
+[functions.reminders]
 verify_jwt = false
 
 [functions.channels]

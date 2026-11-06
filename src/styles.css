@@ -164,6 +164,7 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
 .stage { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden; }
 .stage-body { flex: 1; min-height: 0; overflow: auto; }
 .stage-banner { flex: none; padding: 8px 20px; background: var(--attention-tint); font-size: 14px; }
+.stage-banner-bad { background: var(--danger-tint); color: var(--danger); }
 
 /* Заявки */
 .leads { height: 100%; display: flex; }
@@ -287,15 +288,50 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
 .lesson-editor-head { display: flex; align-items: center; gap: 8px; }
 .lesson-editor-head h2 { flex: 1; font-size: 22px; }
 .lesson-editor-head .back { display: none; margin-left: -8px; }
-.lesson-when { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 12px; }
+.lesson-when { display: grid; grid-template-columns: minmax(0, 1fr) 150px 170px; gap: 12px; }
 .lesson-notes textarea { min-height: 140px; }
 .student-list { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; }
-.student { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 10px 14px; border-bottom: 1px solid var(--rule-soft); }
+.student { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px 12px; padding: 12px 14px; border-bottom: 1px solid var(--rule-soft); }
 .student:last-child { border-bottom: 0; }
-.student-who { flex: 1 1 170px; min-width: 0; overflow-wrap: anywhere; }
+.student-who { min-width: 0; overflow-wrap: anywhere; }
 .student-who strong { display: block; font-weight: 600; }
 .student-who a { color: var(--action); text-decoration: none; font-size: 14px; }
-.student-note { flex: 2 1 200px; min-width: 0; }
+.student-note { grid-column: 1 / -1; min-width: 0; }
+.attend { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+.attend button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 36px; padding: 4px 10px; background: var(--sheet); border: 0; font-size: 14px; white-space: nowrap; }
+.attend button + button { border-left: 1px solid var(--rule); }
+.attend .is-yes { background: #e1f3f1; color: var(--work); font-weight: 600; }
+.attend .is-no { background: var(--danger-tint); color: var(--danger); font-weight: 600; }
+.student-pay { grid-column: 1 / -1; display: grid; grid-template-columns: 150px 150px minmax(0, 1fr); gap: 10px; align-items: end; }
+.student-money { font-size: 13px; }
+.student-money input { font-variant-numeric: tabular-nums; }
+.student-debt { align-self: center; padding-top: 18px; font-size: 14px; }
+.student-reminder { grid-column: 1 / -1; font-size: 13px; }
+.student-reminder-bad { color: var(--danger); }
+.debt { color: var(--danger); font-weight: 600; }
+.lesson-totals { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 14px; font-variant-numeric: tabular-nums; }
+.reply-bar { display: flex; align-items: center; gap: 6px; margin-top: 6px; overflow-x: auto; scrollbar-width: none; }
+.reply-bar .chip { flex: none; padding: 4px 12px; }
+.reply-bar .icon-button { flex: none; }
+.reply-list { display: flex; flex-direction: column; gap: 10px; }
+.reply-item { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--paper); border-radius: 6px; }
+.reply-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pay-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+.pay-stat { padding: 14px 16px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; }
+.pay-stat span { display: block; font-size: 13px; color: var(--ink-soft); }
+.pay-stat strong { display: block; margin-top: 4px; font: 600 20px/1.2 var(--font-ui); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pay-search { margin-bottom: 12px; background: var(--sheet); border: 1px solid var(--rule); }
+.lesson-hint { margin-top: -8px; font-size: 13px; }
+.pay-person { padding: 14px 16px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; }
+.pay-person + .pay-person { margin-top: 10px; }
+.pay-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; }
+.pay-head a { color: var(--action); text-decoration: none; font-size: 14px; margin-left: 8px; }
+.pay-sum { font-variant-numeric: tabular-nums; }
+.pay-lines { margin-top: 8px; border-top: 1px solid var(--rule-soft); }
+.pay-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; padding: 8px 0; border-bottom: 1px solid var(--rule-soft); font-size: 14px; }
+.pay-line:last-child { border-bottom: 0; padding-bottom: 0; }
+.pay-line a { color: var(--action); font-weight: 500; text-decoration: none; }
+.pay-line-side { display: flex; align-items: center; gap: 10px; }
 .student-add { display: flex; flex-direction: column; gap: 10px; }
 .client-search { position: relative; }
 .client-results { margin-top: 4px; background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; max-height: 280px; overflow-y: auto; }
@@ -511,8 +547,16 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
   .lesson-when, .manual-student { grid-template-columns: minmax(0, 1fr); }
   .manual-student .button { width: 100%; }
   .save-bar-row { gap: 4px 14px; }
-  .student { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
-  .student-note { grid-column: 1 / -1; grid-row: 2; }
+  .student { grid-template-columns: minmax(0, 1fr) auto; }
+  .attend { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: 1fr 1fr; }
+  .attend button { min-height: 44px; }
+  .student-pay { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .student-debt { grid-column: 1 / -1; padding-top: 0; }
+  .reply-bar .chip { min-height: 44px; padding: 4px 14px; }
+  .pay-stats { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .pay-line .button { min-height: 44px; }
+  .pay-line a, .pay-head a { display: inline-flex; align-items: center; min-height: 44px; }
+  .pay-head a { margin-left: 0; display: flex; }
 
   /* Главный админ */
   .company-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }

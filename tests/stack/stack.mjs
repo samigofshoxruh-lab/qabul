@@ -15,7 +15,7 @@ export const GATEWAY = `http://127.0.0.1:${PORTS.gateway}`;
 export const MOCK_URL = `http://127.0.0.1:${PORTS.mock}`;
 export const CRON_SECRET = "cron-test-secret";
 export const ENCRYPTION_KEY = "local-test-encryption-key-0123456789";
-const FUNCTIONS = ["webhook", "channels", "send-message", "team", "refresh-tokens", "platform"];
+const FUNCTIONS = ["webhook", "channels", "send-message", "team", "refresh-tokens", "platform", "reminders"];
 const JWT_REQUIRED = new Set(["channels", "send-message", "team", "platform"]);
 
 const b64 = (v) => Buffer.from(v).toString("base64url");

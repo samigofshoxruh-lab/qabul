@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
-import { BookOpen, Building2, Inbox, LifeBuoy, ListChecks, LogOut, Menu, Plug, ShieldCheck, Users } from "lucide-react";
+import { BookOpen, Building2, Inbox, LifeBuoy, ListChecks, LogOut, Menu, Plug, ShieldCheck, Users, Wallet } from "lucide-react";
 import { Logo, Modal } from "./components/ui";
+import { type ChannelProblem, useChannelProblems } from "./lib/alerts";
 import { daysLeft, longDate } from "./lib/format";
 import { isConfigured, supabase } from "./lib/supabase";
 import { SUPPORT_CHANGED, useSupportUnread } from "./lib/support";
@@ -11,6 +12,7 @@ import { AuthPage } from "./pages/AuthPage";
 import { ChannelsPage } from "./pages/ChannelsPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LessonsPage } from "./pages/LessonsPage";
+import { PaymentsPage } from "./pages/PaymentsPage";
 import { PlatformPage } from "./pages/PlatformPage";
 import { PlatformSupportPage } from "./pages/PlatformSupportPage";
 import { OwnerSupport, SupportPage } from "./pages/SupportPage";
@@ -55,6 +57,7 @@ interface NavItem {
   label: string;
   icon: ComponentType<{ size?: number; "aria-hidden"?: boolean }>;
   badge?: number;
+  badgeLabel?: string;
   /** На телефоне остаётся в нижнем меню, остальное уходит в «Ещё». */
   primary?: boolean;
   isActive?: (path: string) => boolean;
@@ -73,7 +76,7 @@ function RailLink({ item, secondary, onNavigate }: { item: NavItem; secondary?: 
     >
       <span className="rail-icon">
         <Icon size={22} aria-hidden />
-        {Boolean(item.badge) && <span className="rail-badge" aria-label={`Непрочитанных: ${item.badge}`}>{item.badge}</span>}
+        {Boolean(item.badge) && <span className="rail-badge" aria-label={`${item.badgeLabel ?? "Непрочитанных"}: ${item.badge}`}>{item.badge}</span>}
       </span>
       {item.label}
     </Link>
@@ -128,18 +131,32 @@ function Rail({ items, platform, note }: { items: NavItem[]; platform?: boolean;
   );
 }
 
+function ChannelBanner({ problems, isOwner }: { problems: ChannelProblem[]; isOwner: boolean }) {
+  const { pathname } = useLocation();
+  if (problems.length === 0 || pathname.startsWith("/channels")) return null;
+  const names = problems.map((p) => p.name).join(", ");
+  return (
+    <p className="stage-banner stage-banner-bad" role="alert">
+      {problems.length === 1 ? `Канал ${names} не работает. ${problems[0].reason}` : `Не работают каналы: ${names}.`}{" "}
+      {isOwner ? <Link to="/channels">Открыть каналы</Link> : "Сообщите об этом владельцу компании."}
+    </p>
+  );
+}
+
 function CabinetShell({ workspace, isPlatformAdmin, children }: { workspace: Workspace; isPlatformAdmin: boolean; children: ReactNode }) {
   const isOwner = workspace.role === "owner";
   const left = workspace.access_until ? daysLeft(workspace.access_until) : null;
   const unread = useSupportUnread(false, isOwner);
+  const channelProblems = useChannelProblems(workspace.id);
 
   const items: NavItem[] = [
     { to: "/leads", label: "Заявки", icon: Inbox, primary: true },
     { to: "/lessons", label: "Уроки", icon: BookOpen, primary: true },
+    { to: "/payments", label: "Оплаты", icon: Wallet },
     ...(isOwner
       ? [
           { to: "/questions", label: "Вопросы", icon: ListChecks, primary: true },
-          { to: "/channels", label: "Каналы", icon: Plug },
+          { to: "/channels", label: "Каналы", icon: Plug, badge: channelProblems.length, badgeLabel: "Каналов с проблемой" },
         ]
       : []),
     { to: "/team", label: "Команда", icon: Users },
@@ -153,10 +170,11 @@ function CabinetShell({ workspace, isPlatformAdmin, children }: { workspace: Wor
       <div className="stage">
         {left !== null && left <= 7 && (
           <p className="stage-banner" role="status">
-            Доступ заканчивается {longDate(workspace.access_until!)}.{" "}
+            Доступ заканчивается {longDate(workspace.access_until!)}, осталось {left} дн. После этого бот перестанет отвечать клиентам.{" "}
             {isOwner ? <Link to="/support">Написать в поддержку</Link> : "Чтобы продлить его, обратитесь к владельцу компании."}
           </p>
         )}
+        <ChannelBanner problems={channelProblems} isOwner={isOwner} />
         <div className="stage-body">{children}</div>
       </div>
     </div>
@@ -302,6 +320,7 @@ export function App() {
             <Route path="/leads/:leadId" element={<LeadsPage />} />
             <Route path="/lessons" element={<LessonsPage />} />
             <Route path="/lessons/:lessonId" element={<LessonsPage />} />
+            <Route path="/payments" element={<PaymentsPage />} />
             <Route path="/questions" element={isOwner ? <SurveysPage /> : <Navigate to="/leads" replace />} />
             <Route path="/channels" element={isOwner ? <ChannelsPage /> : <Navigate to="/leads" replace />} />
             <Route path="/team" element={<TeamPage />} />

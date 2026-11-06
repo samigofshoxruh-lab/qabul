@@ -731,3 +731,197 @@ test("удаление компании удаляет и переписку с 
   await q("delete from workspaces where id = $1", [owner.workspace]);
   assert.equal((await q("select 1 from support_messages where workspace_id = $1", [owner.workspace])).length, 0);
 });
+
+// Ученик из заявки на уроке через заданное число минут.
+async function studentOnLesson(minutes, { remind = true, price = 0 } = {}) {
+  const { owner, ch } = await setup();
+  const user = uid("tg");
+  await inbound(ch.id, user, { text: "Привет" });
+  const contact = await one("select * from contacts where channel_id = $1 and external_id = $2", [ch.id, user]);
+  const lesson = await one(
+    "insert into lessons (workspace_id, title, starts_at, remind, price) values ($1, 'Английский', now() + make_interval(mins => $2), $3, $4) returning *",
+    [owner.workspace, minutes, remind, price],
+  );
+  const student = await one(
+    "insert into lesson_students (workspace_id, lesson_id, contact_id, name) values ($1, $2, $3, 'Анна') returning *",
+    [owner.workspace, lesson.id, contact.id],
+  );
+  return { owner, ch, user, contact, lesson, student };
+}
+
+const claim = async () => (await one("select lesson_reminders_claim() as r")).r;
+const claimFor = async (channelId) => (await claim()).filter((m) => m.channel_id === channelId);
+
+test("напоминание за день уходит один раз, за три часа до урока только напоминание за час", async () => {
+  const far = await studentOnLesson(26 * 60);
+  assert.deepEqual(await claimFor(far.ch.id), []);
+
+  const day = await studentOnLesson(10 * 60);
+  const [first, ...rest] = await claimFor(day.ch.id);
+  assert.equal(rest.length, 0);
+  assert.match(first.text, /^Напоминаем: (сегодня|завтра) в \d\d:\d\d урок «Английский»\. Ждём вас!$/);
+  assert.equal(first.external_id, day.user);
+  assert.deepEqual(await claimFor(day.ch.id), [], "повторно то же напоминание не выбирается");
+  const message = await one("select sender, status, direction from messages where id = $1", [first.message_id]);
+  assert.deepEqual(message, { sender: "bot", status: "queued", direction: "out" });
+
+  const close = await studentOnLesson(50);
+  const due = await claimFor(close.ch.id);
+  assert.equal(due.length, 1);
+  assert.match(due[0].text, /^Скоро начало: /);
+  const { kind } = await one("select kind from lesson_reminders where student_id = $1", [close.student.id]);
+  assert.equal(kind, "hour");
+
+  const middle = await studentOnLesson(2 * 60);
+  assert.deepEqual(await claimFor(middle.ch.id), [], "за два часа ещё рано для напоминания за час и поздно для дня");
+
+  const past = await studentOnLesson(-30);
+  assert.deepEqual(await claimFor(past.ch.id), []);
+});
+
+test("перенос урока даёт новое напоминание, выключенные и неактивные не получают", async () => {
+  const moved = await studentOnLesson(50);
+  assert.equal((await claimFor(moved.ch.id)).length, 1);
+  await q("update lessons set starts_at = now() + interval '40 minutes' where id = $1", [moved.lesson.id]);
+  assert.equal((await claimFor(moved.ch.id)).length, 1);
+
+  const off = await studentOnLesson(50, { remind: false });
+  assert.deepEqual(await claimFor(off.ch.id), []);
+
+  const absent = await studentOnLesson(50);
+  await q("update lesson_students set attended = false where id = $1", [absent.student.id]);
+  assert.deepEqual(await claimFor(absent.ch.id), []);
+
+  const expired = await studentOnLesson(50);
+  await q("update workspaces set access_until = now() - interval '1 hour' where id = $1", [expired.owner.workspace]);
+  assert.deepEqual(await claimFor(expired.ch.id), []);
+
+  const botOff = await studentOnLesson(50);
+  await q("update channels set is_active = false where id = $1", [botOff.ch.id]);
+  assert.deepEqual(await claimFor(botOff.ch.id), []);
+  const skipped = await one("select error, message_id from lesson_reminders where student_id = $1", [botOff.student.id]);
+  assert.deepEqual(skipped, { error: "В этом канале выключен бот", message_id: null });
+
+  // Ученику, добавленному вручную, писать некуда.
+  const manual = await studentOnLesson(50);
+  await q("update lesson_students set contact_id = null where id = $1", [manual.student.id]);
+  assert.deepEqual(await claimFor(manual.ch.id), []);
+});
+
+test("ответ на напоминание возвращает заявку администратору, опрос не начинается заново", async () => {
+  const { ch, user, contact } = await studentOnLesson(50);
+  await inbound(ch.id, user, { option: "sat" });
+  await inbound(ch.id, user, { text: "Анна" });
+  await inbound(ch.id, user, { text: "+998901234567" });
+  await inbound(ch.id, user, { option: "skip" });
+  const lead = await one("select * from leads where contact_id = $1", [contact.id]);
+  await q("update leads set status = 'done', closed_at = now() - interval '30 days' where id = $1", [lead.id]);
+
+  const [due] = await claimFor(ch.id);
+  await q("select bot_message_result($1, 'ext-1')", [due.message_id]);
+
+  const reply = await inbound(ch.id, user, { text: "Спасибо, приду" });
+  assert.deepEqual(reply.outbound, []);
+  assert.equal(reply.lead_id, lead.id);
+  const fresh = await one("select status, closed_at, assigned_to from leads where id = $1", [lead.id]);
+  assert.deepEqual(fresh, { status: "new", closed_at: null, assigned_to: null });
+  assert.equal((await q("select 1 from leads where contact_id = $1", [contact.id])).length, 1);
+});
+
+test("долг считается сам, цена урока доходит до учеников, кроме особой цены", async () => {
+  const { owner, lesson, student } = await studentOnLesson(600, { price: 300000 });
+  assert.equal(Number(student.price), 300000, "новый ученик получает цену урока");
+  assert.equal(Number(student.debt), 300000);
+
+  const special = await one(
+    "insert into lesson_students (workspace_id, lesson_id, name, price) values ($1, $2, 'Борис', 150000) returning *",
+    [owner.workspace, lesson.id],
+  );
+  assert.equal(Number(special.price), 150000);
+
+  await as("authenticated", owner.id, async (run) => {
+    await run("update lesson_students set paid = 100000, attended = true where id = $1", [student.id]);
+    await run("update lessons set price = 400000 where id = $1", [lesson.id]);
+  });
+  const updated = await one("select price, paid, debt, attended from lesson_students where id = $1", [student.id]);
+  assert.deepEqual([Number(updated.price), Number(updated.paid), Number(updated.debt), updated.attended], [400000, 100000, 300000, true]);
+  assert.equal(Number((await one("select price from lesson_students where id = $1", [special.id])).price), 150000);
+
+  // Переплата не даёт отрицательного долга, отрицательную сумму записать нельзя.
+  await q("update lesson_students set paid = 999000 where id = $1", [student.id]);
+  assert.equal(Number((await one("select debt from lesson_students where id = $1", [student.id])).debt), 0);
+  await assert.rejects(q("update lesson_students set paid = -1 where id = $1", [student.id]), /check constraint/);
+  await assert.rejects(q("update lesson_students set debt = 1 where id = $1", [student.id]), /can only be updated to DEFAULT/);
+});
+
+test("напоминание о конце срока приходит за 7, 3 и 1 день по одному разу, продление начинает заново", async () => {
+  const owner = await company("Срок", new Date(Date.now() + 6.5 * 86400000));
+  const reminders = () => q("select sender, text, author_id from support_messages where workspace_id = $1 order by created_at", [owner.workspace]);
+  const run = () => q("select private.send_term_reminders()");
+  const setLeft = (days) => q("update workspaces set access_until = now() + make_interval(hours => $1) where id = $2", [Math.round(days * 24), owner.workspace]);
+  await run();
+  await run();
+  let list = await reminders();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].sender, "platform");
+  assert.equal(list[0].author_id, null);
+  assert.match(list[0].text, /осталось 7 дн\./);
+  assert.match(list[0].text, /заканчивается \d+ [а-я]+,/);
+
+  await setLeft(2.5);
+  await run();
+  await run();
+  list = await reminders();
+  assert.equal(list.length, 2);
+  assert.match(list[1].text, /осталось 3 дн\./);
+
+  await setLeft(0.5);
+  await run();
+  list = await reminders();
+  assert.equal(list.length, 3);
+  assert.match(list[2].text, /осталось 1 дн\./);
+
+  // Новый срок после продления: снова предупредим, когда он станет близко.
+  await setLeft(6);
+  await run();
+  assert.equal((await reminders()).length, 4);
+
+  const unsuspended = await company("Приостановлена", new Date(Date.now() + 86400000 * 2));
+  await q("update workspaces set is_suspended = true where id = $1", [unsuspended.workspace]);
+  await run();
+  assert.equal((await q("select 1 from support_messages where workspace_id = $1", [unsuspended.workspace])).length, 0);
+
+  const farAway = await company("Далеко", new Date(Date.now() + 86400000 * 30));
+  await run();
+  assert.equal((await q("select 1 from support_messages where workspace_id = $1", [farAway.workspace])).length, 0);
+
+  // Владелец не может подделать сообщение и вызвать рассылку.
+  await assert.rejects(as("authenticated", owner.id, (r) => r("select private.send_term_reminders()")), /permission denied/);
+  await assert.rejects(as("authenticated", owner.id, (r) => r("select private.call_edge_function('reminders')")), /permission denied/);
+  await assert.rejects(as("authenticated", owner.id, (r) => r("select lesson_reminders_claim()")), /permission denied/);
+});
+
+test("быстрые ответы и напоминания видны только своей компании, удаляются вместе с ней", async () => {
+  const mine = await studentOnLesson(50);
+  const other = await company("Чужая");
+  await claimFor(mine.ch.id);
+  const reply = await as("authenticated", mine.owner.id, (run) =>
+    run("insert into quick_replies (workspace_id, title, text) values ($1, 'Цены', '300 000 сум') returning *", [mine.owner.workspace]));
+  assert.equal(reply[0].title, "Цены");
+
+  assert.equal((await as("authenticated", other.id, (run) => run("select * from quick_replies where workspace_id = $1", [mine.owner.workspace]))).length, 0);
+  assert.equal((await as("authenticated", other.id, (run) => run("select * from lesson_reminders where workspace_id = $1", [mine.owner.workspace]))).length, 0);
+  await assert.rejects(
+    as("authenticated", other.id, (run) => run("insert into quick_replies (workspace_id, title, text) values ($1, 'x', 'y')", [mine.owner.workspace])),
+    /row-level security/,
+  );
+  await as("authenticated", other.id, (run) => run("update quick_replies set text = 'взлом' where id = $1", [reply[0].id]));
+  assert.equal((await one("select text from quick_replies where id = $1", [reply[0].id])).text, "300 000 сум");
+  await assert.rejects(as("authenticated", mine.owner.id, (run) => run("insert into lesson_reminders (workspace_id, student_id, kind, starts_at) values ($1, $2, 'day', now())", [mine.owner.workspace, mine.student.id])), /permission denied/);
+  await assert.rejects(as("anon", null, (run) => run("select * from quick_replies")), /permission denied/);
+
+  await q("delete from workspaces where id = $1", [mine.owner.workspace]);
+  assert.equal((await q("select 1 from quick_replies where workspace_id = $1", [mine.owner.workspace])).length, 0);
+  assert.equal((await q("select 1 from lesson_reminders where workspace_id = $1", [mine.owner.workspace])).length, 0);
+  assert.equal((await q("select 1 from private.term_reminders where workspace_id = $1", [mine.owner.workspace])).length, 0);
+});

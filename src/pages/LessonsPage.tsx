@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Plus, Search, Trash2 } from "lucide-react";
+import { ArrowLeft, Check, Plus, Search, Trash2, X } from "lucide-react";
 import { useApp } from "../App";
 import { ChannelTag, Empty, ErrorNote, Modal } from "../components/ui";
-import { fullTime, toLocalInput } from "../lib/format";
+import { fullTime, money, moneyInput, parseMoney, toLocalInput } from "../lib/format";
 import { errorText, supabase } from "../lib/supabase";
-import type { Lesson, LessonStudent, Platform } from "../lib/types";
+import type { Lesson, LessonReminder, LessonStudent, Platform } from "../lib/types";
 
 interface Client {
   id: string;
@@ -127,6 +127,8 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
   const [when, setWhen] = useState(toLocalInput(lesson?.starts_at ?? null));
   const [duration, setDuration] = useState(lesson?.duration_minutes ? String(lesson.duration_minutes) : "");
   const [notes, setNotes] = useState(lesson?.notes ?? "");
+  const [price, setPrice] = useState(moneyInput(lesson?.price ?? 0));
+  const [remind, setRemind] = useState(lesson?.remind ?? true);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -147,6 +149,8 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
       starts_at: when ? new Date(when).toISOString() : null,
       duration_minutes: duration ? Number(duration) : null,
       notes: notes.trim() || null,
+      price: parseMoney(price),
+      remind,
     };
     try {
       if (lesson) {
@@ -202,7 +206,20 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
             Длительность, мин
             <input type="number" min={1} max={1440} value={duration} onChange={(e) => { setDuration(e.target.value); touch(); }} />
           </label>
+          <label className="field">
+            Цена, сум
+            <input inputMode="numeric" value={price} maxLength={17} onChange={(e) => { setPrice(moneyInput(parseMoney(e.target.value))); touch(); }} placeholder="0" />
+          </label>
         </div>
+        <label className="check">
+          <input type="checkbox" checked={remind} onChange={(e) => { setRemind(e.target.checked); touch(); }} />
+          Бот напомнит ученикам об уроке за день и за час
+        </label>
+        {remind && (
+          <p className="muted lesson-hint">
+            Напоминание получат те, кто писал боту. В Instagram, Facebook и WhatsApp оно дойдёт, только если клиент писал за последние 24 часа: таковы правила этих платформ.
+          </p>
+        )}
         <label className="field lesson-notes">
           Заметки
           <textarea value={notes} onChange={(e) => { setNotes(e.target.value); touch(); }} maxLength={20000} placeholder="Преподаватель, кабинет, тема, что принести, любые детали" />
@@ -223,7 +240,7 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
         </div>
       </form>
 
-      {lesson ? <Students lessonId={lesson.id} onChanged={onChanged} /> : <p className="muted">После создания урока сюда можно будет добавить учеников.</p>}
+      {lesson ? <Students lesson={lesson} onChanged={onChanged} /> : <p className="muted">После создания урока сюда можно будет добавить учеников.</p>}
 
       {confirmDelete && (
         <Modal title={`Удалить урок «${lesson!.title}»?`} onClose={() => setConfirmDelete(false)}>
@@ -244,9 +261,54 @@ function LessonEditor({ lesson, onChanged }: { lesson: Lesson | null; onChanged:
   );
 }
 
-function Students({ lessonId, onChanged }: { lessonId: string; onChanged: () => Promise<void> | void }) {
+/** Сумма: показывается с пробелами, сохраняется при выходе из поля. */
+function MoneyField({ label, value, onSave }: { label: string; value: number; onSave: (value: number) => void }) {
+  const [text, setText] = useState(moneyInput(value));
+  useEffect(() => setText(moneyInput(value)), [value]);
+  return (
+    <label className="field student-money">
+      {label}
+      <input
+        inputMode="numeric"
+        value={text}
+        maxLength={17}
+        placeholder="0"
+        onChange={(e) => setText(moneyInput(parseMoney(e.target.value)))}
+        onBlur={() => {
+          if (parseMoney(text) !== value) onSave(parseMoney(text));
+        }}
+      />
+    </label>
+  );
+}
+
+const REMINDER_LABEL = { day: "за день", hour: "за час" };
+
+function ReminderStatus({ student, lesson, reminders }: { student: LessonStudent; lesson: Lesson; reminders: LessonReminder[] }) {
+  if (!lesson.remind && reminders.length === 0) return null;
+  if (!student.contact_id) {
+    return <p className="student-reminder muted">Бот не сможет напомнить: ученик добавлен вручную и не писал боту.</p>;
+  }
+  const current = reminders.filter((r) => r.student_id === student.id && r.starts_at === lesson.starts_at);
+  return (
+    <>
+      {current.map((r) => {
+        const failure = r.error ?? (r.messages?.status === "failed" ? r.messages.error : null);
+        return (
+          <p key={r.kind} className={`student-reminder ${failure ? "student-reminder-bad" : "muted"}`}>
+            Напоминание {REMINDER_LABEL[r.kind]}: {failure ? `не дошло. ${failure}` : r.messages?.status === "queued" ? "отправляется" : "отправлено"}
+          </p>
+        );
+      })}
+    </>
+  );
+}
+
+function Students({ lesson, onChanged }: { lesson: Lesson; onChanged: () => Promise<void> | void }) {
+  const lessonId = lesson.id;
   const { workspace } = useApp();
   const [students, setStudents] = useState<LessonStudent[] | null>(null);
+  const [reminders, setReminders] = useState<LessonReminder[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [query, setQuery] = useState("");
   const [name, setName] = useState("");
@@ -255,12 +317,26 @@ function Students({ lessonId, onChanged }: { lessonId: string; onChanged: () => 
 
   const load = useCallback(async () => {
     const { data, error: e } = await supabase.from("lesson_students").select("*").eq("lesson_id", lessonId).order("created_at");
-    if (e) setError(e.message);
-    else setStudents(data as LessonStudent[]);
+    if (e) {
+      setError(e.message);
+      return;
+    }
+    const rows = data as LessonStudent[];
+    setStudents(rows);
+    const { data: sent } = await supabase
+      .from("lesson_reminders")
+      .select("student_id, kind, starts_at, error, messages(status, error)")
+      .in("student_id", rows.map((s) => s.id))
+      .order("created_at");
+    setReminders((sent ?? []) as unknown as LessonReminder[]);
   }, [lessonId]);
 
+  // Новая цена урока меняет суммы у учеников, новое время меняет напоминания.
   useEffect(() => {
     load();
+  }, [load, lesson.price, lesson.starts_at]);
+
+  useEffect(() => {
     supabase
       .from("contacts")
       .select("id, display_name, username, phone, channels(platform)")
@@ -268,7 +344,7 @@ function Students({ lessonId, onChanged }: { lessonId: string; onChanged: () => 
       .order("last_seen_at", { ascending: false })
       .limit(1000)
       .then(({ data }) => setClients((data ?? []) as unknown as Client[]));
-  }, [load, workspace.id]);
+  }, [workspace.id]);
 
   const joined = useMemo(() => new Set(students?.map((s) => s.contact_id)), [students]);
   const results = useMemo(() => {
@@ -310,15 +386,39 @@ function Students({ lessonId, onChanged }: { lessonId: string; onChanged: () => 
 
   async function saveNote(student: LessonStudent, note: string) {
     if (note === (student.note ?? "")) return;
-    const { error: e } = await supabase.from("lesson_students").update({ note: note || null }).eq("id", student.id);
-    if (e) setError(e.message);
-    else load();
+    await update(student, { note: note || null });
   }
+
+  async function update(student: LessonStudent, fields: Partial<Pick<LessonStudent, "attended" | "price" | "paid" | "note">>) {
+    setError("");
+    const { error: e } = await supabase.from("lesson_students").update(fields).eq("id", student.id);
+    if (e) setError(e.message);
+    await load();
+  }
+
+  const totals = useMemo(() => {
+    const list = students ?? [];
+    return {
+      came: list.filter((s) => s.attended === true).length,
+      missed: list.filter((s) => s.attended === false).length,
+      paid: list.reduce((sum, s) => sum + s.paid, 0),
+      price: list.reduce((sum, s) => sum + s.price, 0),
+      debt: list.reduce((sum, s) => sum + s.debt, 0),
+    };
+  }, [students]);
 
   return (
     <section className="stack" aria-label="Ученики">
       <h3>Ученики{students && students.length > 0 ? ` (${students.length})` : ""}</h3>
       <ErrorNote>{error}</ErrorNote>
+
+      {students && students.length > 0 && (
+        <p className="lesson-totals">
+          <span>Пришли {totals.came} из {students.length}{totals.missed > 0 ? `, не пришли ${totals.missed}` : ""}</span>
+          <span>Оплачено {money(totals.paid)} из {money(totals.price)}</span>
+          {totals.debt > 0 && <span className="debt">Долг {money(totals.debt)}</span>}
+        </p>
+      )}
 
       {students && students.length > 0 && (
         <ul className="student-list">
@@ -328,6 +428,34 @@ function Students({ lessonId, onChanged }: { lessonId: string; onChanged: () => 
                 <strong>{student.name}</strong>
                 {student.phone && <a href={`tel:${student.phone}`}>{student.phone}</a>}
               </span>
+              <div className="attend" role="group" aria-label={`Посещаемость: ${student.name}`}>
+                <button
+                  type="button"
+                  className={student.attended === true ? "is-yes" : ""}
+                  aria-pressed={student.attended === true}
+                  onClick={() => update(student, { attended: student.attended === true ? null : true })}
+                >
+                  <Check size={15} aria-hidden /> Пришёл
+                </button>
+                <button
+                  type="button"
+                  className={student.attended === false ? "is-no" : ""}
+                  aria-pressed={student.attended === false}
+                  onClick={() => update(student, { attended: student.attended === false ? null : false })}
+                >
+                  <X size={15} aria-hidden /> Не пришёл
+                </button>
+              </div>
+              <button type="button" className="icon-button student-remove" onClick={() => remove(student)} aria-label={`Убрать: ${student.name}`}>
+                <Trash2 size={16} aria-hidden />
+              </button>
+              <div className="student-pay">
+                <MoneyField label="К оплате" value={student.price} onSave={(price) => update(student, { price })} />
+                <MoneyField label="Оплачено" value={student.paid} onSave={(paid) => update(student, { paid })} />
+                <p className={`student-debt ${student.debt > 0 ? "debt" : "muted"}`}>
+                  {student.debt > 0 ? `Долг ${money(student.debt)}` : student.price > 0 ? "Оплачено полностью" : "Без оплаты"}
+                </p>
+              </div>
               <input
                 className="student-note"
                 defaultValue={student.note ?? ""}
@@ -336,9 +464,7 @@ function Students({ lessonId, onChanged }: { lessonId: string; onChanged: () => 
                 maxLength={2000}
                 onBlur={(e) => saveNote(student, e.target.value.trim())}
               />
-              <button type="button" className="icon-button" onClick={() => remove(student)} aria-label={`Убрать: ${student.name}`}>
-                <Trash2 size={16} aria-hidden />
-              </button>
+              <ReminderStatus student={student} lesson={lesson} reminders={reminders} />
             </li>
           ))}
         </ul>
