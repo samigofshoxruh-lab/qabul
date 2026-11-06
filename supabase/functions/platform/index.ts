@@ -110,8 +110,9 @@ Deno.serve(async (req) => {
         if (body.add_months !== undefined) {
           const months = Number(body.add_months);
           if (!Number.isInteger(months) || months < 1 || months > 120) throw new ChannelError("Проверьте срок");
-          const { error } = await db.rpc("platform_extend_access", { p_workspace: workspaceId, p_months: months });
+          const { data, error } = await db.rpc("platform_extend_access", { p_workspace: workspaceId, p_months: months });
           if (error) throw error;
+          return json({ ok: true, access_until: data });
         } else {
           const until = body.unlimited === true ? null : parseDate(body.until);
           const { error } = await db.from("workspaces").update({ access_until: until }).eq("id", workspaceId);
@@ -194,7 +195,7 @@ Deno.serve(async (req) => {
         const { data: company, error: companyError } = await db.from("workspaces").select("id, name").eq("id", workspaceId).maybeSingle();
         if (companyError) throw companyError;
         if (!company) throw new ChannelError("Компания не найдена", 404);
-        if (text(body.confirm_name) !== company.name) throw new ChannelError("Название компании введено неверно");
+        if (body.confirm !== true) throw new ChannelError("Подтвердите удаление компании");
 
         const { data: members, error: membersError } = await db.from("workspace_members").select("user_id").eq("workspace_id", workspaceId);
         if (membersError) throw membersError;

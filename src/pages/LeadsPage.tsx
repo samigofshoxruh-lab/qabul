@@ -304,6 +304,8 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const chatList = useRef<HTMLOListElement>(null);
+  const composer = useRef<HTMLFormElement>(null);
+  const [panel, setPanel] = useState<"sheet" | "chat">("sheet");
 
   const loadDetail = useCallback(async () => {
     const [a, m] = await Promise.all([
@@ -359,7 +361,11 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
     // Прокручиваем только саму переписку: на телефоне страница остаётся на анкете.
     const list = chatList.current;
     if (list) list.scrollTop = list.scrollHeight;
-  }, [messageCount]);
+    if (panel === "chat" && window.matchMedia("(max-width: 860px)").matches) {
+      // Форма ответа прилипает к низу, поэтому прокручиваем сам раздел заявки к последнему сообщению.
+      composer.current?.closest(".lead-detail")?.scrollTo(0, 1_000_000);
+    }
+  }, [messageCount, panel]);
 
   async function run(action: () => PromiseLike<{ error: { message: string } | null }>) {
     setBusy(true);
@@ -464,7 +470,16 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
       <ErrorNote>{error}</ErrorNote>
       {lead.handoff && lead.status === "new" && <p className="note note-attention">Клиент не смог пройти опрос или попросил живого человека. Ответьте ему лично.</p>}
 
-      <div className="detail-columns">
+      <div className="detail-switch" role="tablist" aria-label="Раздел заявки">
+        <button type="button" role="tab" aria-selected={panel === "sheet"} onClick={() => setPanel("sheet")}>
+          Анкета
+        </button>
+        <button type="button" role="tab" aria-selected={panel === "chat"} onClick={() => setPanel("chat")}>
+          Переписка{messageCount > 0 ? ` (${messageCount})` : ""}
+        </button>
+      </div>
+
+      <div className={`detail-columns show-${panel}`}>
         <div className="detail-sheet">
           <h3>Анкета</h3>
           <dl className="sheet">
@@ -516,7 +531,7 @@ function LeadDetail({ lead, onChanged, onBack }: { lead: Lead; onChanged: () => 
               </li>
             ))}
           </ol>
-          <form className="composer" onSubmit={send}>
+          <form className="composer" onSubmit={send} ref={composer}>
             <textarea
               rows={2}
               value={draft}

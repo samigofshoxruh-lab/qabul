@@ -151,3 +151,22 @@ export interface Message {
   error: string | null;
   created_at: string;
 }
+
+export interface SupportMessage {
+  id: string;
+  workspace_id: string;
+  sender: "owner" | "platform";
+  author_email: string | null;
+  text: string;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface SupportThread {
+  workspace_id: string;
+  name: string;
+  last_at: string;
+  last_text: string;
+  last_sender: "owner" | "platform";
+  unread: number;
+}

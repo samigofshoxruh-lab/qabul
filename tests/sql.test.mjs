@@ -708,3 +708,26 @@ test("уроки: администратор добавляет клиента �
   await as("authenticated", admin.id, (run) => run("delete from lessons where id = $1", [lesson.id]));
   assert.equal((await q("select 1 from lesson_students where lesson_id = $1", [lesson.id])).length, 0);
 });
+
+test("поддержка закрыта для анонимов и не даёт подделать отправителя", async () => {
+  const owner = await company();
+  await assert.rejects(as("anon", null, (run) => run("select * from support_messages")), /permission denied/);
+  await assert.rejects(as("anon", null, (run) => run("select support_send($1, 'x')", [owner.workspace])), /permission denied/);
+  await assert.rejects(as("anon", null, (run) => run("select platform_support_threads()")), /permission denied/);
+  await assert.rejects(
+    as("authenticated", owner.id, (run) => run("insert into support_messages (workspace_id, sender, text) values ($1, 'platform', 'x')", [owner.workspace])),
+    /permission denied/,
+  );
+  await assert.rejects(as("authenticated", owner.id, (run) => run("update support_messages set read_at = now()")), /permission denied/);
+
+  const id = (await as("authenticated", owner.id, (run) => run("select support_send($1, 'Здравствуйте') as id", [owner.workspace])))[0].id;
+  const row = await one("select sender, author_id, author_email from support_messages where id = $1", [id]);
+  assert.deepEqual(row, { sender: "owner", author_id: owner.id, author_email: owner.email });
+});
+
+test("удаление компании удаляет и переписку с поддержкой", async () => {
+  const owner = await company();
+  await as("authenticated", owner.id, (run) => run("select support_send($1, 'Здравствуйте')", [owner.workspace]));
+  await q("delete from workspaces where id = $1", [owner.workspace]);
+  assert.equal((await q("select 1 from support_messages where workspace_id = $1", [owner.workspace])).length, 0);
+});

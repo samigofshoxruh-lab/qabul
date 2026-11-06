@@ -773,20 +773,23 @@ test("Главный админ удаляет компанию со всеми 
   await invoke(boss, "platform", { action: "overview" });
   await stack.db.query("insert into workspace_members (workspace_id, user_id, role, email) values ($1, $2, 'admin', $3)", [victim.workspace, bossRow.user_id, bossEmailRow.email]);
 
-  // Без точного названия и без прав удалить нельзя.
-  const wrong = await invoke(boss, "platform", { action: "delete_company", workspace_id: victim.workspace, confirm_name: "Не то" });
-  assert.match(wrong.error, /неверно/);
-  const denied = await invoke(victim.client, "platform", { action: "delete_company", workspace_id: victim.workspace, confirm_name: "Удаляемая школа" });
+  // Без подтверждения и без прав удалить нельзя.
+  const noConfirm = await invoke(boss, "platform", { action: "delete_company", workspace_id: victim.workspace });
+  assert.match(noConfirm.error, /Подтвердите/);
+  const denied = await invoke(victim.client, "platform", { action: "delete_company", workspace_id: victim.workspace, confirm: true });
   assert.equal(denied.status, 403);
   assert.equal((await stack.db.query("select 1 from workspaces where id = $1", [victim.workspace])).rowCount, 1);
 
+  // Переписка с поддержкой удаляется вместе с компанией.
+  assert.equal((await victim.client.rpc("support_send", { p_workspace: victim.workspace, p_text: "Помогите" })).error, null);
+
   await mock.reset();
-  const done = await invoke(boss, "platform", { action: "delete_company", workspace_id: victim.workspace, confirm_name: "Удаляемая школа" });
+  const done = await invoke(boss, "platform", { action: "delete_company", workspace_id: victim.workspace, confirm: true });
   assert.equal(done.ok, true, JSON.stringify(done));
   assert.equal(done.removed_users, 2, "владелец и сотрудник");
 
   // В базе не осталось ничего от этой компании.
-  for (const table of ["workspace_members", "surveys", "channels", "contacts", "leads", "answers", "messages", "lessons", "lesson_students"]) {
+  for (const table of ["workspace_members", "surveys", "channels", "contacts", "leads", "answers", "messages", "lessons", "lesson_students", "support_messages"]) {
     const { rowCount } = await stack.db.query(`select 1 from ${table} where workspace_id = $1`, [victim.workspace]);
     assert.equal(rowCount, 0, table);
   }
@@ -811,4 +814,61 @@ test("Главный админ удаляет компанию со всеми 
   const { companies } = await invoke(boss, "platform", { action: "overview" });
   assert.ok(!companies.some((c) => c.id === victim.workspace));
   assert.ok(companies.some((c) => c.id === other.workspace));
+});
+
+test("Поддержка: владелец и главный админ переписываются, продление работает, срок не мешает", async () => {
+  const owner = await newOwner("Школа с вопросом");
+  const staffEmail = `sup-staff${Date.now()}@example.com`;
+  await invoke(owner.client, "team", { action: "add", workspace_id: owner.workspace, email: staffEmail, password: "password123" });
+  const { client: staff } = await login(staffEmail, "password123");
+  const stranger = await newOwner("Чужая школа");
+
+  const send = (client, text, asPlatform = false, ws = owner.workspace) =>
+    client.rpc("support_send", { p_workspace: ws, p_text: text, p_as_platform: asPlatform });
+
+  // Только владелец этой компании и главный админ.
+  assert.equal((await send(owner.client, "Прошу продлить доступ")).error, null);
+  assert.match((await send(staff, "Я сотрудник")).error.message, /только владелец/);
+  assert.match((await send(stranger.client, "Я чужой")).error.message, /только владелец/);
+  assert.match((await send(owner.client, "Притворяюсь админом", true)).error.message, /Нет доступа/);
+  assert.deepEqual((await stranger.client.from("support_messages").select("id")).data, []);
+  assert.deepEqual((await staff.from("support_messages").select("id")).data, []);
+  assert.equal((await stranger.client.rpc("platform_support_threads")).error.code, "42501");
+
+  // Главный админ видит обращение и непрочитанное.
+  const threads = (await boss.rpc("platform_support_threads")).data;
+  const thread = threads.find((t) => t.workspace_id === owner.workspace);
+  assert.equal(thread.name, "Школа с вопросом");
+  assert.equal(thread.last_text, "Прошу продлить доступ");
+  assert.equal(thread.unread, 1);
+  assert.ok((await boss.rpc("support_unread", { p_as_platform: true })).data >= 1);
+
+  await boss.rpc("support_mark_read", { p_workspace: owner.workspace, p_as_platform: true });
+  assert.equal((await boss.rpc("platform_support_threads")).data.find((t) => t.workspace_id === owner.workspace).unread, 0);
+
+  // Ответ доходит до владельца.
+  assert.equal((await send(boss, "Продлил", true)).error, null);
+  assert.equal((await owner.client.rpc("support_unread")).data, 1);
+  const { data: seen } = await owner.client.from("support_messages").select("sender, text, author_email").order("created_at");
+  assert.deepEqual(seen.map((m) => m.sender), ["owner", "platform"]);
+  assert.ok(seen[0].author_email === owner.email);
+  await owner.client.rpc("support_mark_read", { p_workspace: owner.workspace });
+  assert.equal((await owner.client.rpc("support_unread")).data, 0);
+
+  // Срок истёк: кабинет закрыт, а поддержка работает, иначе нельзя попросить продление.
+  await invoke(boss, "platform", { action: "set_access", workspace_id: owner.workspace, until: new Date(Date.now() - 86400000).toISOString() });
+  assert.deepEqual((await owner.client.from("leads").select("id")).data, []);
+  assert.equal((await send(owner.client, "Срок закончился, продлите")).error, null);
+  assert.equal((await owner.client.from("support_messages").select("id")).data.length, 3);
+  assert.match((await send(staff, "Я сотрудник")).error.message, /только владелец/);
+
+  // Продление из чата возвращает новую дату.
+  const extended = await invoke(boss, "platform", { action: "set_access", workspace_id: owner.workspace, add_months: 1 });
+  assert.ok(new Date(extended.access_until) > new Date(Date.now() + 27 * 86400000));
+  assert.equal((await owner.client.rpc("my_access")).data.memberships[0].active, true);
+
+  // Пустое сообщение и прямая запись в таблицу не проходят.
+  assert.match((await send(owner.client, "   ")).error.message, /до 4000/);
+  assert.ok((await owner.client.from("support_messages").insert({ workspace_id: owner.workspace, sender: "platform", text: "Подделка" })).error);
+  assert.ok((await owner.client.from("support_messages").delete().eq("workspace_id", owner.workspace)).error);
 });
