@@ -1,0 +1,29 @@
+project_id = "crm-bot"
+
+[auth]
+# Регистрации нет: пользователей создаёт главный админ.
+enable_signup = false
+site_url = "http://localhost:5173"
+
+[auth.email]
+enable_confirmations = false
+
+# Соцсети не присылают JWT Supabase: подпись проверяет сама функция.
+[functions.webhook]
+verify_jwt = false
+
+# Вызывается из pg_cron с заголовком x-cron-secret.
+[functions.refresh-tokens]
+verify_jwt = false
+
+[functions.channels]
+verify_jwt = true
+
+[functions.send-message]
+verify_jwt = true
+
+[functions.team]
+verify_jwt = true
+
+[functions.platform]
+verify_jwt = true
