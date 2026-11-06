@@ -281,6 +281,10 @@ function CompanyDetail({
   }
 
   const status = accessLabel(company.access_until, company.is_suspended);
+  // Личный срок раньше срока компании: человек потеряет доступ раньше остальных.
+  const earlier = company.members.filter(
+    (m) => m.access_until && (!company.access_until || new Date(m.access_until) < new Date(company.access_until)),
+  );
 
   return (
     <article className="company-detail">
@@ -355,6 +359,17 @@ function CompanyDetail({
           </button>
         </div>
         <p className="muted">Когда срок закончился, кабинет закрывается, а бот перестаёт отвечать клиентам. Данные сохраняются.</p>
+        {earlier.length > 0 && (
+          <div className="note note-attention term-warning">
+            <p>
+              Личный срок заканчивается раньше срока компании, и продление на него не влияет:{" "}
+              {earlier.map((m) => `${m.email} (до ${longDate(m.access_until!)})`).join(", ")}.
+            </p>
+            <button type="button" className="button" disabled={busy} onClick={() => act({ action: "clear_user_terms" })}>
+              Снять личные сроки
+            </button>
+          </div>
+        )}
       </section>
 
       <section className="panel" aria-label="Пользователи">
@@ -608,7 +623,10 @@ function PersonalTerm({ companyId, member, onChanged, onClose }: { companyId: st
           save(until);
         }}
       >
-        <p>Пользователь потеряет доступ в этот день, даже если срок компании ещё идёт.</p>
+        <p>
+          Пользователь потеряет доступ в этот день, даже если срок компании ещё идёт.
+          {member.role === "owner" ? " У владельца личный срок снимается при каждом продлении компании." : ""}
+        </p>
         <label className="field">
           Доступ открыт до
           <input type="date" value={until} onChange={(e) => setUntil(e.target.value)} required />

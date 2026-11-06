@@ -320,6 +320,7 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
 .company-facts .tag { margin-right: 2px; }
 .panel { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 .panel-status { font-weight: 600; }
+.term-warning { flex-direction: column; align-items: flex-start; gap: 10px; }
 .list-note { margin: 10px 20px 0; }
 .company-row { display: flex; align-items: stretch; border-bottom: 1px solid var(--rule-soft); }
 .company-row .row { flex: 1; min-width: 0; border-bottom: 0; padding-right: 8px; }

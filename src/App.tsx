@@ -5,7 +5,7 @@ import { BookOpen, Building2, Inbox, LifeBuoy, ListChecks, LogOut, Menu, Plug, S
 import { Logo, Modal } from "./components/ui";
 import { daysLeft, longDate } from "./lib/format";
 import { isConfigured, supabase } from "./lib/supabase";
-import { useSupportUnread } from "./lib/support";
+import { SUPPORT_CHANGED, useSupportUnread } from "./lib/support";
 import type { Access, Membership, Workspace } from "./lib/types";
 import { AuthPage } from "./pages/AuthPage";
 import { ChannelsPage } from "./pages/ChannelsPage";
@@ -221,12 +221,32 @@ export function App() {
       return;
     }
     const { data, error } = await supabase.rpc("my_access");
-    setAccess(error ? null : (data as Access));
+    setAccess((previous) => {
+      // Короткий сбой сети не должен закрывать уже открытый кабинет.
+      if (error) return previous ?? null;
+      return JSON.stringify(previous) === JSON.stringify(data) ? previous : (data as Access);
+    });
   }, [userId]);
 
+  // Срок может измениться, пока сайт открыт: перечитываем его при новом сообщении поддержки,
+  // при возврате на вкладку и на всякий случай раз в 30 секунд.
   useEffect(() => {
     loadAccess();
-  }, [loadAccess]);
+    if (!userId) return;
+    const timer = setInterval(loadAccess, 30_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") loadAccess();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    window.addEventListener(SUPPORT_CHANGED, loadAccess);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+      window.removeEventListener(SUPPORT_CHANGED, loadAccess);
+    };
+  }, [loadAccess, userId]);
 
   if (!isConfigured) {
     return (

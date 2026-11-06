@@ -107,18 +107,26 @@ Deno.serve(async (req) => {
       }
 
       case "set_access": {
+        let extended: unknown;
         if (body.add_months !== undefined) {
           const months = Number(body.add_months);
           if (!Number.isInteger(months) || months < 1 || months > 120) throw new ChannelError("Проверьте срок");
           const { data, error } = await db.rpc("platform_extend_access", { p_workspace: workspaceId, p_months: months });
           if (error) throw error;
-          return json({ ok: true, access_until: data });
+          extended = data;
         } else {
           const until = body.unlimited === true ? null : parseDate(body.until);
           const { error } = await db.from("workspaces").update({ access_until: until }).eq("id", workspaceId);
           if (error) throw error;
         }
-        return json({ ok: true });
+
+        // Владелец живёт по сроку компании: иначе его личный срок закрыл бы ему кабинет раньше.
+        // Снимаем только после того, как новый срок компании записан.
+        const { error: ownerError } = await db.from("workspace_members").update({ access_until: null })
+          .eq("workspace_id", workspaceId).eq("role", "owner");
+        if (ownerError) throw ownerError;
+
+        return json(extended === undefined ? { ok: true } : { ok: true, access_until: extended });
       }
 
       case "set_suspended": {
@@ -157,6 +165,12 @@ Deno.serve(async (req) => {
         const until = body.until ? parseDate(body.until) : null;
         const { error } = await db.from("workspace_members").update({ access_until: until })
           .eq("workspace_id", workspaceId).eq("user_id", body.user_id as string);
+        if (error) throw error;
+        return json({ ok: true });
+      }
+
+      case "clear_user_terms": {
+        const { error } = await db.from("workspace_members").update({ access_until: null }).eq("workspace_id", workspaceId);
         if (error) throw error;
         return json({ ok: true });
       }

@@ -872,3 +872,36 @@ test("Поддержка: владелец и главный админ пере
   assert.ok((await owner.client.from("support_messages").insert({ workspace_id: owner.workspace, sender: "platform", text: "Подделка" })).error);
   assert.ok((await owner.client.from("support_messages").delete().eq("workspace_id", owner.workspace)).error);
 });
+
+test("Продление компании доходит до владельца, личные сроки сотрудников не трогает без команды", async () => {
+  const owner = await newOwner("Школа со сроком");
+  const staffEmail = `term-staff${Date.now()}@example.com`;
+  const added = await invoke(boss, "platform", { action: "add_user", workspace_id: owner.workspace, email: staffEmail, password: "password123", role: "admin", until: new Date(Date.now() + 10 * 86400000).toISOString() });
+  const { client: staff } = await login(staffEmail, "password123");
+  const shown = async (client) => (await client.rpc("my_access")).data.memberships[0];
+
+  await invoke(boss, "platform", { action: "set_access", workspace_id: owner.workspace, until: new Date(Date.now() + 20 * 86400000).toISOString() });
+  await invoke(boss, "platform", { action: "set_user_access", workspace_id: owner.workspace, user_id: owner.user.id, until: new Date(Date.now() + 5 * 86400000).toISOString() });
+  const daysOf = (row) => Math.round((new Date(row.access_until) - Date.now()) / 86400000);
+  assert.equal(daysOf(await shown(owner.client)), 5, "личный срок владельца меньше срока компании");
+
+  // Ошибочное продление ничего не меняет.
+  assert.equal((await invoke(boss, "platform", { action: "set_access", workspace_id: owner.workspace, add_months: 0 })).status, 400);
+  assert.equal((await invoke(boss, "platform", { action: "set_access", workspace_id: owner.workspace, until: "не дата" })).status, 400);
+  assert.equal(daysOf(await shown(owner.client)), 5);
+
+  // Главный админ продлевает: владелец сразу видит новый срок компании.
+  const { access_until: extended } = await invoke(boss, "platform", { action: "set_access", workspace_id: owner.workspace, add_months: 1 });
+  const ownerNow = await shown(owner.client);
+  assert.equal(new Date(ownerNow.access_until).getTime(), new Date(extended).getTime());
+  assert.ok(daysOf(ownerNow) > 45);
+
+  // Личный срок сотрудника остаётся, пока его не снимут.
+  assert.equal(daysOf(await shown(staff)), 10);
+  assert.equal((await invoke(boss, "platform", { action: "clear_user_terms", workspace_id: owner.workspace })).ok, true);
+  assert.equal(new Date((await shown(staff)).access_until).getTime(), new Date(extended).getTime());
+  const { companies } = await invoke(boss, "platform", { action: "overview" });
+  assert.ok(companies.find((c) => c.id === owner.workspace).members.every((m) => m.access_until === null));
+  assert.equal(added.user_id.length > 0, true);
+  assert.equal((await invoke(owner.client, "platform", { action: "clear_user_terms", workspace_id: owner.workspace })).status, 403);
+});

@@ -26,6 +26,7 @@ export function SupportChat({ workspaceId, asPlatform, preset, reloadKey, onActi
   const [error, setError] = useState("");
   const list = useRef<HTMLOListElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  const knownCount = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     const { data, error: e } = await supabase.from("support_messages").select("*").eq("workspace_id", workspaceId).order("created_at");
@@ -35,6 +36,11 @@ export function SupportChat({ workspaceId, asPlatform, preset, reloadKey, onActi
     }
     setError("");
     setMessages(data as SupportMessage[]);
+    // Новое сообщение могло прийти вместе с продлением: сайт сразу перечитает срок.
+    if (knownCount.current !== null && knownCount.current !== data.length) {
+      window.dispatchEvent(new Event(SUPPORT_CHANGED));
+    }
+    knownCount.current = data.length;
     const incoming = asPlatform ? "owner" : "platform";
     if ((data as SupportMessage[]).some((m) => m.sender === incoming && !m.read_at)) {
       await supabase.rpc("support_mark_read", { p_workspace: workspaceId, p_as_platform: asPlatform });
