@@ -17,18 +17,24 @@ Deno.serve(async (req) => {
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new ChannelError("Проверьте email");
       if (password.length < 8) throw new ChannelError("Пароль должен быть не короче 8 символов");
 
-      const { error } = await db.auth.admin.createUser({
-        email,
-        password,
-        email_confirm: true,
-        // Триггер в базе читает это поле и добавляет пользователя в кабинет администратором.
-        app_metadata: { invited_workspace: body.workspace_id },
-      });
+      const { data: created, error } = await db.auth.admin.createUser({ email, password, email_confirm: true });
       if (error) {
         if (/already|exists|registered/i.test(error.message)) {
           throw new ChannelError("Этот email уже зарегистрирован. Укажите другой.", 409);
         }
         throw new ChannelError(`Не удалось создать администратора: ${error.message}`, 502);
+      }
+
+      const { error: memberError } = await db.from("workspace_members").insert({
+        workspace_id: body.workspace_id,
+        user_id: created.user.id,
+        role: "admin",
+        email,
+      });
+      if (memberError) {
+        // Не оставляем учётную запись без кабинета.
+        await db.auth.admin.deleteUser(created.user.id);
+        throw memberError;
       }
       return json({ ok: true });
     }

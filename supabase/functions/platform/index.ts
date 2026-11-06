@@ -1,9 +1,10 @@
 // Консоль главного админа: компании, пользователи и сроки доступа.
 // Всё здесь требует секретного ключа, поэтому работает только на сервере и только для главного админа.
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2.119.0";
-import { serviceClient } from "../_shared/db.ts";
+import { adapters } from "../_shared/adapters/index.ts";
+import { credentialsOf, loadSecrets, serviceClient } from "../_shared/db.ts";
 import { cors, errorResponse, json, readJson, requireUser } from "../_shared/http.ts";
-import { ChannelError } from "../_shared/types.ts";
+import { ChannelError, type Platform } from "../_shared/types.ts";
 
 const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
 
@@ -187,6 +188,40 @@ Deno.serve(async (req) => {
           if (authError) console.warn("Не удалось удалить учётную запись", authError.message);
         }
         return json({ ok: true });
+      }
+
+      case "delete_company": {
+        const { data: company, error: companyError } = await db.from("workspaces").select("id, name").eq("id", workspaceId).maybeSingle();
+        if (companyError) throw companyError;
+        if (!company) throw new ChannelError("Компания не найдена", 404);
+        if (text(body.confirm_name) !== company.name) throw new ChannelError("Название компании введено неверно");
+
+        const { data: members, error: membersError } = await db.from("workspace_members").select("user_id").eq("workspace_id", workspaceId);
+        if (membersError) throw membersError;
+        const { data: channels, error: channelsError } = await db.from("channels").select("id, platform").eq("workspace_id", workspaceId).is("deleted_at", null);
+        if (channelsError) throw channelsError;
+
+        // Отключаем webhook у соцсетей, пока токены ещё есть. Отозванный токен не должен мешать удалению.
+        await Promise.allSettled((channels ?? []).map(async (channel) => {
+          const secrets = await loadSecrets(db, channel.id);
+          if (secrets) await adapters[channel.platform as Platform].deactivate(await credentialsOf(secrets));
+        }));
+
+        // Каскадное удаление: опросы, каналы, токены, клиенты, заявки, ответы, переписка, уроки, участники.
+        const { error: deleteError } = await db.from("workspaces").delete().eq("id", workspaceId);
+        if (deleteError) throw deleteError;
+
+        // Учётные записи удаляем, если они не нужны другой компании и это не главный админ.
+        let removedUsers = 0;
+        for (const { user_id: userId } of members ?? []) {
+          const { count } = await db.from("workspace_members").select("*", { count: "exact", head: true }).eq("user_id", userId);
+          const { data: isAdmin } = await db.from("platform_admins").select("user_id").eq("user_id", userId).maybeSingle();
+          if (count || isAdmin) continue;
+          const { error: authError } = await db.auth.admin.deleteUser(userId);
+          if (authError) console.warn("Не удалось удалить учётную запись", authError.message);
+          else removedUsers++;
+        }
+        return json({ ok: true, removed_users: removedUsers });
       }
 
       default:

@@ -135,9 +135,14 @@ export async function startStack({ postgrestBin, denoBin = path.join(ROOT, "node
       if (claims?.role !== "service_role") return send(403, { msg: "forbidden" });
       const exists = await db.query("select 1 from auth.users where email = $1", [body.email]);
       if (exists.rowCount) return send(422, { code: 422, error_code: "email_exists", msg: "A user with this email address has already been registered" });
+      // Как настоящий GoTrue: сначала вставка пользователя, app_metadata записывается отдельным обновлением.
+      const inserted = await db.query(
+        "insert into auth.users (email, encrypted_password, raw_user_meta_data) values ($1, $2, $3) returning id",
+        [body.email, hash(body.password), body.user_metadata ?? {}],
+      );
       const { rows } = await db.query(
-        "insert into auth.users (email, encrypted_password, raw_app_meta_data, raw_user_meta_data) values ($1, $2, $3, $4) returning *",
-        [body.email, hash(body.password), body.app_metadata ?? {}, body.user_metadata ?? {}],
+        "update auth.users set raw_app_meta_data = $1 where id = $2 returning *",
+        [body.app_metadata ?? {}, inserted.rows[0].id],
       );
       return send(200, publicUser(rows[0]));
     }

@@ -23,6 +23,13 @@ async function signup(meta = {}, appMeta = {}) {
   return { id: user.id, email, workspace: member?.workspace_id, role: member?.role };
 }
 
+// Сотрудника добавляет функция team или platform: отдельная запись о членстве.
+async function staff(workspace) {
+  const user = await signup();
+  await q("insert into workspace_members (workspace_id, user_id, role, email) values ($1, $2, 'admin', $3)", [workspace, user.id, user.email]);
+  return { ...user, workspace, role: "admin" };
+}
+
 // Компанию с владельцем создаёт главный админ, регистрации больше нет.
 async function company(name = "Школа", accessUntil = null) {
   const owner = await signup();
@@ -114,19 +121,17 @@ test("новый пользователь без приглашения не п�
   assert.equal((await q("select 1 from workspaces where owner_id = $1", [user.id])).length, 0);
 });
 
-test("приглашение работает от роли supabase_auth_admin, как на настоящем Supabase", async () => {
-  const owner = await company();
+test("создание пользователя от роли supabase_auth_admin работает, как на настоящем Supabase", async () => {
   const email = `${uid("gotrue")}@example.com`;
   const client = await db.connect();
   try {
     await client.query("set role supabase_auth_admin");
-    await client.query("insert into auth.users (email, raw_app_meta_data) values ($1, $2)", [email, { invited_workspace: owner.workspace }]);
+    await client.query("insert into auth.users (email) values ($1)", [email]);
   } finally {
     await client.query("reset role");
     client.release();
   }
-  const member = await one("select m.role, m.workspace_id from workspace_members m join auth.users u on u.id = m.user_id where u.email = $1", [email]);
-  assert.deepEqual(member, { role: "admin", workspace_id: owner.workspace });
+  assert.equal((await q("select 1 from auth.users where email = $1", [email])).length, 1);
 });
 
 test("приглашение из user_metadata не даёт войти в чужой кабинет", async () => {
@@ -135,11 +140,18 @@ test("приглашение из user_metadata не даёт войти в чу
   assert.equal(attacker.workspace, undefined);
 });
 
-test("приглашение из app_metadata добавляет администратора", async () => {
-  const owner = await company();
-  const admin = await signup({}, { invited_workspace: owner.workspace });
-  assert.equal(admin.workspace, owner.workspace);
-  assert.equal(admin.role, "admin");
+test("метаданные пользователя не дают входа в чужой кабинет", async () => {
+  const victim = await company();
+  const viaApp = await signup({}, { invited_workspace: victim.workspace });
+  assert.equal(viaApp.workspace, undefined);
+});
+
+test("удаление учётной записи владельца не удаляет компанию", async () => {
+  const { owner, ch } = await setup();
+  const start = await inbound(ch.id, "keep", { text: "hi" });
+  await q("delete from auth.users where id = $1", [owner.id]);
+  assert.equal((await one("select owner_id from workspaces where id = $1", [owner.workspace])).owner_id, null);
+  assert.equal((await q("select 1 from leads where id = $1", [start.lead_id])).length, 1);
 });
 
 test("полный опрос: кнопка, номер варианта, текст, телефон, пропуск", async () => {
@@ -335,7 +347,7 @@ test("закрытая заявка: в течение суток возобно
 
 test("взять в работу: бот замолкает, второй администратор получает отказ", async () => {
   const { owner, ch } = await setup();
-  const admin = await signup({}, { invited_workspace: owner.workspace });
+  const admin = await staff(owner.workspace);
   const start = await inbound(ch.id, "t1", { text: "hi" });
 
   await as("authenticated", owner.id, (run) => run("select take_lead($1)", [start.lead_id]));
@@ -484,7 +496,7 @@ test("браузер не может менять заявки, токены к�
 
 test("администратор читает опросы, но менять их может только владелец", async () => {
   const { owner, survey, ch } = await setup();
-  const admin = await signup({}, { invited_workspace: owner.workspace });
+  const admin = await staff(owner.workspace);
   const visible = await as("authenticated", admin.id, (run) => run("select id from questions where survey_id = $1", [survey.id]));
   assert.equal(visible.length, 4);
 
@@ -590,7 +602,7 @@ test("продление считается от текущего срока, е
 
 test("приостановка компании и личный срок пользователя тоже закрывают доступ", async () => {
   const { owner, ch } = await setup();
-  const admin = await signup({}, { invited_workspace: owner.workspace });
+  const admin = await staff(owner.workspace);
 
   await q("update workspaces set is_suspended = true where id = $1", [owner.workspace]);
   assert.equal((await as("authenticated", owner.id, (run) => run("select id from channels"))).length, 0);
@@ -633,7 +645,7 @@ test("my_access показывает главного админа только 
 
 test("уроки: администратор добавляет клиента и ученика вручную, чужие данные закрыты", async () => {
   const { owner, ch } = await setup();
-  const admin = await signup({}, { invited_workspace: owner.workspace });
+  const admin = await staff(owner.workspace);
   const stranger = await setup();
   await inbound(ch.id, "stud", { text: "hi" });
   const contact = await one("select id from contacts where channel_id = $1 and external_id = 'stud'", [ch.id]);

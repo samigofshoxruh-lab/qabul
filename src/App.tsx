@@ -166,7 +166,7 @@ export function App() {
 
   const platformRoute = isPlatformAdmin ? (
     <PlatformShell membership={membership}>
-      <PlatformPage />
+      <PlatformPage onAccessChanged={loadAccess} />
     </PlatformShell>
   ) : (
     <Navigate to="/" replace />

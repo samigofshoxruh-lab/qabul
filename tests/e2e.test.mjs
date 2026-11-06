@@ -599,8 +599,11 @@ test("Команда: владелец добавляет и удаляет ад
   assert.equal(loginError, null);
 
   const { data: members } = await admin.from("workspace_members").select("role, email");
-  assert.equal(members.length, 2);
+  assert.equal(members.length, 2, "сотрудник действительно состоит в кабинете");
   assert.equal(members.find((m) => m.email === email).role, "admin");
+  const { data: seenByOwner } = await owner.client.from("workspace_members").select("email");
+  assert.ok(seenByOwner.some((m) => m.email === email), "владелец видит сотрудника в списке");
+  assert.equal((await admin.rpc("my_access")).data.memberships[0].active, true);
 
   // Администратор не трогает каналы, команду и вопросы.
   const noChannel = await invoke(admin, "channels", { action: "connect", workspace_id: owner.workspace, platform: "telegram", token: "1:x" });
@@ -737,4 +740,75 @@ test("Главный админ: компании, пользователи, с�
   assert.equal((await invoke(boss, "platform", { action: "remove_user", workspace_id: created.workspace_id, user_id: added.user_id })).ok, true);
   assert.equal((await stack.db.query("select 1 from auth.users where id = $1", [added.user_id])).rowCount, 0);
   assert.equal((await find()).members.length, 1);
+});
+
+test("Главный админ удаляет компанию со всеми данными, другие компании и его аккаунт не затронуты", async () => {
+  const victim = await newOwner("Удаляемая школа");
+  const other = await newOwner("Другая школа");
+  await addQuestions(victim, SURVEY);
+  await addQuestions(other, SURVEY);
+
+  // Наполняем обе компании: канал, заявка с ответом и перепиской, урок с учеником, сотрудник.
+  const { channel: victimChannel } = await invoke(victim.client, "channels", { action: "connect", workspace_id: victim.workspace, platform: "viber", token: "viber-del" });
+  const secretRow = await secretOf(victimChannel.id);
+  const raw = JSON.stringify({ event: "message", message_token: 501, sender: { id: "del1", name: "Клиент" }, message: { type: "text", text: "Привет" } });
+  const posted = await fetch(fn("webhook", `/${victimChannel.id}`), {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-viber-content-signature": crypto.createHmac("sha256", "viber-del").update(raw).digest("hex") },
+    body: raw,
+  });
+  assert.equal(posted.status, 200);
+  assert.ok(secretRow);
+
+  const { data: contact } = await victim.client.from("contacts").select("id").single();
+  const { data: lesson } = await victim.client.from("lessons").insert({ workspace_id: victim.workspace, title: "Урок" }).select().single();
+  await victim.client.from("lesson_students").insert({ workspace_id: victim.workspace, lesson_id: lesson.id, contact_id: contact.id, name: "Клиент" });
+  const staffEmail = `del-staff${Date.now()}@example.com`;
+  assert.equal((await invoke(victim.client, "team", { action: "add", workspace_id: victim.workspace, email: staffEmail, password: "password123" })).ok, true);
+  await other.client.from("lessons").insert({ workspace_id: other.workspace, title: "Чужой урок" });
+
+  // Главный админ в компании: его аккаунт должен уцелеть.
+  const { rows: [bossRow] } = await stack.db.query("select user_id from platform_admins limit 1");
+  const bossEmailRow = (await stack.db.query("select email from auth.users where id = $1", [bossRow.user_id])).rows[0];
+  await invoke(boss, "platform", { action: "overview" });
+  await stack.db.query("insert into workspace_members (workspace_id, user_id, role, email) values ($1, $2, 'admin', $3)", [victim.workspace, bossRow.user_id, bossEmailRow.email]);
+
+  // Без точного названия и без прав удалить нельзя.
+  const wrong = await invoke(boss, "platform", { action: "delete_company", workspace_id: victim.workspace, confirm_name: "Не то" });
+  assert.match(wrong.error, /неверно/);
+  const denied = await invoke(victim.client, "platform", { action: "delete_company", workspace_id: victim.workspace, confirm_name: "Удаляемая школа" });
+  assert.equal(denied.status, 403);
+  assert.equal((await stack.db.query("select 1 from workspaces where id = $1", [victim.workspace])).rowCount, 1);
+
+  await mock.reset();
+  const done = await invoke(boss, "platform", { action: "delete_company", workspace_id: victim.workspace, confirm_name: "Удаляемая школа" });
+  assert.equal(done.ok, true, JSON.stringify(done));
+  assert.equal(done.removed_users, 2, "владелец и сотрудник");
+
+  // В базе не осталось ничего от этой компании.
+  for (const table of ["workspace_members", "surveys", "channels", "contacts", "leads", "answers", "messages", "lessons", "lesson_students"]) {
+    const { rowCount } = await stack.db.query(`select 1 from ${table} where workspace_id = $1`, [victim.workspace]);
+    assert.equal(rowCount, 0, table);
+  }
+  assert.equal((await stack.db.query("select 1 from workspaces where id = $1", [victim.workspace])).rowCount, 0);
+  assert.equal((await stack.db.query("select 1 from channel_secrets where channel_id = $1", [victimChannel.id])).rowCount, 0, "токены удалены");
+  assert.equal((await stack.db.query("select 1 from questions q where q.survey_id = $1", [victim.survey.id])).rowCount, 0);
+
+  // Учётные записи удалены, главный админ на месте.
+  assert.equal((await stack.db.query("select 1 from auth.users where email = any($1)", [[victim.email, staffEmail]])).rowCount, 0);
+  assert.equal((await browser().auth.signInWithPassword({ email: victim.email, password: "password123" })).error?.message.length > 0, true);
+  assert.equal((await stack.db.query("select 1 from auth.users where id = $1", [bossRow.user_id])).rowCount, 1);
+  assert.equal((await boss.rpc("my_access")).data.is_platform_admin, true);
+
+  // Webhook снят, входящие больше не принимаются.
+  assert.ok((await sent("viber", "set_webhook")).some((c) => c.body.url === ""));
+  const after = await fetch(fn("webhook", `/${victimChannel.id}`), { method: "POST", headers: { "content-type": "application/json" }, body: raw });
+  assert.equal(after.status, 404);
+
+  // Другая компания цела и работает.
+  assert.equal((await other.client.from("lessons").select("title")).data[0].title, "Чужой урок");
+  assert.equal((await other.client.rpc("my_access")).data.memberships[0].active, true);
+  const { companies } = await invoke(boss, "platform", { action: "overview" });
+  assert.ok(!companies.some((c) => c.id === victim.workspace));
+  assert.ok(companies.some((c) => c.id === other.workspace));
 });

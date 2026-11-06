@@ -112,12 +112,13 @@ function CreateCompany({ onClose, onCreated }: { onClose: () => void; onCreated:
   );
 }
 
-export function PlatformPage() {
+export function PlatformPage({ onAccessChanged }: { onAccessChanged: () => void }) {
   const [companies, setCompanies] = useState<Company[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -156,6 +157,7 @@ export function PlatformPage() {
           </label>
         </header>
         <ErrorNote>{error}</ErrorNote>
+        {notice && <p className="note list-note" role="status">{notice}</p>}
         {companies === null && !error && <p className="muted pad">Загружаем компании…</p>}
         <ul className="rows">
           {companies?.length === 0 && (
@@ -192,7 +194,21 @@ export function PlatformPage() {
 
       <section className="lead-detail" aria-label="Компания">
         {selected ? (
-          <CompanyDetail key={selected.id} company={selected} onChanged={load} onBack={() => setSelectedId(null)} />
+          <CompanyDetail
+            key={selected.id}
+            company={selected}
+            onChanged={async () => {
+              await load();
+              onAccessChanged();
+            }}
+            onBack={() => setSelectedId(null)}
+            onDeleted={async (message) => {
+              setSelectedId(null);
+              setNotice(message);
+              await load();
+              onAccessChanged();
+            }}
+          />
         ) : (
           <div className="detail-empty">
             <p>Выберите компанию, чтобы изменить срок доступа и пользователей.</p>
@@ -213,7 +229,17 @@ export function PlatformPage() {
   );
 }
 
-function CompanyDetail({ company, onChanged, onBack }: { company: Company; onChanged: () => Promise<void>; onBack: () => void }) {
+function CompanyDetail({
+  company,
+  onChanged,
+  onBack,
+  onDeleted,
+}: {
+  company: Company;
+  onChanged: () => Promise<void>;
+  onBack: () => void;
+  onDeleted: (message: string) => Promise<void>;
+}) {
   const [date, setDate] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -223,6 +249,7 @@ function CompanyDetail({ company, onChanged, onBack }: { company: Company; onCha
   const [passwordFor, setPasswordFor] = useState<CompanyMember | null>(null);
   const [termFor, setTermFor] = useState<CompanyMember | null>(null);
   const [removing, setRemoving] = useState<CompanyMember | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   async function act(body: Record<string, unknown>) {
     setBusy(true);
@@ -339,6 +366,17 @@ function CompanyDetail({ company, onChanged, onBack }: { company: Company; onCha
         </ul>
       </section>
 
+      <section className="panel panel-danger" aria-label="Удаление компании">
+        <h3>Удаление компании</h3>
+        <p className="muted">Компания и все её данные будут удалены навсегда. Восстановить их будет нельзя.</p>
+        <div>
+          <button type="button" className="button button-danger" onClick={() => setDeleting(true)}>
+            Удалить компанию
+          </button>
+        </div>
+      </section>
+
+      {deleting && <DeleteCompany company={company} onClose={() => setDeleting(false)} onDeleted={onDeleted} />}
       {renaming && (
         <Modal title="Переименовать компанию" onClose={() => setRenaming(false)}>
           <form
@@ -385,6 +423,53 @@ function CompanyDetail({ company, onChanged, onBack }: { company: Company; onCha
         </Modal>
       )}
     </article>
+  );
+}
+
+function DeleteCompany({ company, onClose, onDeleted }: { company: Company; onClose: () => void; onDeleted: (message: string) => Promise<void> }) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await callFunction("platform", { action: "delete_company", workspace_id: company.id, confirm_name: name });
+      await onDeleted(`Компания «${company.name}» удалена со всеми данными.`);
+    } catch (e) {
+      setError(errorText(e));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={`Удалить «${company.name}» навсегда?`} onClose={onClose}>
+      <form className="stack" onSubmit={submit}>
+        <p>Будет удалено без возможности восстановления:</p>
+        <ul className="delete-list">
+          <li>заявки ({company.leads_count}), ответы, вся переписка и клиенты;</li>
+          <li>уроки, ученики, опросы и заметки;</li>
+          <li>подключённые каналы ({company.channels.length}) и их токены, бот перестанет отвечать;</li>
+          <li>учётные записи пользователей ({company.members.length}), если они не состоят в другой компании.</li>
+        </ul>
+        <p className="muted">Сообщения в самих соцсетях останутся: они хранятся у Telegram, Instagram и других платформ.</p>
+        <label className="field">
+          Чтобы подтвердить, напишите название компании: {company.name}
+          <input value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" required />
+        </label>
+        <ErrorNote>{error}</ErrorNote>
+        <div className="button-row">
+          <button className="button button-danger" disabled={busy || name.trim() !== company.name}>
+            {busy ? "Удаляем…" : "Удалить навсегда"}
+          </button>
+          <button type="button" className="button" onClick={onClose}>
+            Оставить
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 

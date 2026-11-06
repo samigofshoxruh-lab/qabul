@@ -320,6 +320,9 @@ input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; accent-color:
 .company-facts .tag { margin-right: 2px; }
 .panel { background: var(--sheet); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 .panel-status { font-weight: 600; }
+.panel-danger { border-color: var(--danger); }
+.delete-list { list-style: disc; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+.list-note { margin: 10px 20px 0; }
 .date-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .date-row input { width: auto; }
 .user-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 10px 0; border-bottom: 1px solid var(--rule-soft); }
