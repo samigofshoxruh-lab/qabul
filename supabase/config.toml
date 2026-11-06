@@ -3,7 +3,7 @@ project_id = "crm-bot"
 [auth]
 # Регистрации нет: пользователей создаёт главный админ.
 enable_signup = false
-site_url = "http://localhost:5173"
+site_url = "https://samigofshoxruh-lab.github.io/qabul/"
 
 [auth.email]
 enable_confirmations = false
