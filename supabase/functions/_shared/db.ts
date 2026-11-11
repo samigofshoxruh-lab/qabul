@@ -54,6 +54,7 @@ export async function credentialsOf(secrets: SecretsRow): Promise<Credentials> {
     appSecret: secrets.app_secret_enc ? await decrypt(secrets.app_secret_enc) : undefined,
     phoneNumberId: secrets.extra?.phone_number_id as string | undefined,
     wabaId: secrets.extra?.waba_id as string | undefined,
+    accountId: secrets.extra?.account_id as string | undefined,
   };
 }
 

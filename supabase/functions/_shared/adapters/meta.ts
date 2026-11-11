@@ -149,12 +149,12 @@ function quickReplies(buttons: { id: string; label: string }[]) {
     : {};
 }
 
-async function sendPageStyle(baseUrl: string, creds: Credentials, recipient: string, message: Parameters<Adapter["send"]>[1], limit: { chars?: number; bytes?: number }) {
+async function sendPageStyle(baseUrl: string, creds: Credentials, recipient: string, message: Parameters<Adapter["send"]>[1], limit: { chars?: number; bytes?: number }, self = "me") {
   const fitted = fitOptions(message, { maxLabel: 20, maxButtons: 13 });
   const chunks = splitText(fitted.text, limit);
   let lastId: string | undefined;
   for (let i = 0; i < chunks.length; i++) {
-    const data = await call(`${baseUrl}/me/messages`, creds.token, {
+    const data = await call(`${baseUrl}/${self}/messages`, creds.token, {
       method: "POST",
       body: {
         recipient: { id: recipient },
@@ -167,8 +167,67 @@ async function sendPageStyle(baseUrl: string, creds: Credentials, recipient: str
   return lastId;
 }
 
+// Meta выдаёт для Instagram два вида токенов. Токен «Business Login for Instagram» начинается с IG
+// и живёт на graph.instagram.com. Токен Facebook Login и нового Unified login начинается с EAA,
+// живёт на graph.facebook.com, а аккаунт Instagram к нему нужно найти отдельно.
+export const isFacebookToken = (token: string) => token.startsWith("EAA");
+const igBase = (creds: Credentials) => (isFacebookToken(creds.token) ? FACEBOOK : INSTAGRAM);
+const igSelf = (creds: Credentials) => (isFacebookToken(creds.token) ? creds.accountId ?? "me" : "me");
+
+interface IgAccount {
+  id: string;
+  username?: string;
+  name?: string;
+}
+
+/** Аккаунты Instagram, до которых дотягивается токен Facebook: Unified login, токен страницы или пользователя. */
+async function instagramAccountsOf(token: string): Promise<IgAccount[]> {
+  const found = new Map<string, IgAccount>();
+  const add = (a: Json) => {
+    if (a?.id) found.set(String(a.id), { id: String(a.id), username: a.username, name: a.name });
+  };
+  const probe = async (url: string, fields: string, pick: (data: Json) => void) => {
+    try {
+      pick(await call(url, token, { query: { fields } }));
+    } catch (e) {
+      // Код 190 означает плохой токен, остальное означает, что у этого вида токена нет такого поля.
+      if (e instanceof ChannelError && /недействителен/.test(e.message)) throw e;
+    }
+  };
+  // Unified login: токен системного пользователя, аккаунты назначены ему.
+  await probe(`${FACEBOOK}/me/assigned_instagram_accounts`, "id,username,name", (d) => (d.data ?? []).forEach(add));
+  if (found.size) return [...found.values()];
+  // Токен страницы Facebook.
+  await probe(`${FACEBOOK}/me`, "instagram_business_account{id,username,name}", (d) => add(d.instagram_business_account));
+  if (found.size) return [...found.values()];
+  // Токен пользователя Facebook: страницы, к которым привязан Instagram.
+  await probe(`${FACEBOOK}/me/accounts`, "instagram_business_account{id,username,name}", (d) =>
+    (d.data ?? []).forEach((p: Json) => add(p.instagram_business_account)));
+  return [...found.values()];
+}
+
 export const instagram: Adapter = {
   async identify(creds) {
+    if (isFacebookToken(creds.token)) {
+      const accounts = await instagramAccountsOf(creds.token);
+      if (accounts.length === 0) {
+        throw new ChannelError(
+          "У этого токена нет доступа к аккаунту Instagram. В Meta в блоке Generate access tokens выпустите токен для нужного аккаунта.",
+        );
+      }
+      if (accounts.length > 1) {
+        const names = accounts.map((a) => (a.username ? `@${a.username}` : a.id)).join(", ");
+        throw new ChannelError(`Токен открывает несколько аккаунтов Instagram: ${names}. Выпустите токен для одного аккаунта.`);
+      }
+      const [account] = accounts;
+      return {
+        externalId: account.id,
+        name: account.username ? `@${account.username}` : (account.name ?? "Instagram"),
+        username: account.username,
+        // Токены Unified login и долгоживущие токены страниц не истекают.
+        tokenExpiresAt: null,
+      };
+    }
     const me = await call(`${INSTAGRAM}/me`, creds.token, { query: { fields: "user_id,username,name" } });
     return {
       // Именно user_id приходит в webhook как entry.id.
@@ -179,20 +238,25 @@ export const instagram: Adapter = {
       tokenExpiresAt: new Date(Date.now() + 60 * 24 * 3600 * 1000).toISOString(),
     };
   },
-  async activate({ creds }) {
-    await call(`${INSTAGRAM}/me/subscribed_apps`, creds.token, {
+  async activate({ creds, identity, saveExtra }) {
+    if (isFacebookToken(creds.token)) {
+      // Для отправки нужен id аккаунта: /me у такого токена указывает не на Instagram.
+      await saveExtra({ account_id: identity.externalId });
+      creds.accountId = identity.externalId;
+    }
+    await call(`${igBase(creds)}/${igSelf(creds)}/subscribed_apps`, creds.token, {
       method: "POST",
       query: { subscribed_fields: MESSAGING_FIELDS },
     });
   },
   async deactivate(creds) {
-    await call(`${INSTAGRAM}/me/subscribed_apps`, creds.token, { method: "DELETE" });
+    await call(`${igBase(creds)}/${igSelf(creds)}/subscribed_apps`, creds.token, { method: "DELETE" });
   },
   send({ creds, contact }, message) {
-    return sendPageStyle(INSTAGRAM, creds, contact.externalId, message, { bytes: 1000 });
+    return sendPageStyle(igBase(creds), creds, contact.externalId, message, { bytes: 1000 }, igSelf(creds));
   },
   async fetchProfile(creds, id) {
-    const p = await call(`${INSTAGRAM}/${id}`, creds.token, { query: { fields: "name,username" } });
+    const p = await call(`${igBase(creds)}/${id}`, creds.token, { query: { fields: "name,username" } });
     return { displayName: p.name ?? p.username, username: p.username };
   },
 };

@@ -59,6 +59,16 @@ export function startMockPlatforms(port) {
         return reply(200, { name: "Анна Клиент", username: "anna_client" });
       }
       if (host === "graph.facebook.com") {
+        const token = url.searchParams.get("access_token") ?? "";
+        // Unified login: /me указывает на системного пользователя, аккаунты Instagram назначены ему.
+        if (url.pathname.endsWith("/me/assigned_instagram_accounts")) {
+          if (token.startsWith("EAA-UNIFIED")) return reply(200, { data: [{ id: "17841400000000002", username: "school_unified", name: "Школа U" }] });
+          return reply(400, { error: { code: 100, message: "(#100) Tried accessing nonexisting field (assigned_instagram_accounts)" } });
+        }
+        if (url.pathname.includes("/17841400000000002/subscribed_apps")) return reply(200, { success: true });
+        if (url.pathname.includes("/17841400000000002/messages")) return reply(200, { recipient_id: body.recipient?.id, message_id: `igu-out-${++seq}` });
+        if (url.pathname.endsWith("/me") && token.startsWith("EAA-PAGE")) return reply(200, { id: "1000000000000001", name: "Школа Page", instagram_business_account: { id: "17841400000000003", username: "school_page" } });
+        if (url.pathname.endsWith("/me/accounts")) return reply(200, { data: [] });
         if (url.pathname.endsWith("/me")) return reply(200, { id: "1000000000000001", name: "Школа Page" });
         if (url.pathname.endsWith("/me/subscribed_apps")) return reply(200, { success: true });
         if (url.pathname.endsWith("/me/messages")) return reply(200, { recipient_id: body.recipient?.id, message_id: `fb-out-${++seq}` });

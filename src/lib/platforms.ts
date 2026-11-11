@@ -42,13 +42,14 @@ export const PLATFORMS: Record<Platform, PlatformInfo> = {
     summary: "Директ профессионального аккаунта. Нужно приложение Meta.",
     steps: [
       "Переведите аккаунт в Business или Creator. В приложении Instagram включите Настройки → Сообщения → «Разрешить доступ к сообщениям».",
-      "На developers.facebook.com откройте приложение → Instagram → API setup with Instagram login.",
-      "Сгенерируйте Access token и скопируйте Instagram App Secret, вставьте их ниже.",
-      "Следующим шагом сайт покажет Callback URL и Verify token для раздела Webhooks.",
+      "На developers.facebook.com откройте приложение → Use cases → Manage messaging & content on Instagram → Customize → API setup with Unified login (в старых приложениях: Instagram → API setup with Instagram login).",
+      "В блоке Generate access tokens нажмите Add account, войдите в аккаунт школы, затем Generate token → Copy. Подойдёт токен любого вида: и IG…, и EAA….",
+      "App Secret: App settings → Basic → App secret → Show. В старых приложениях это Instagram App Secret на странице Instagram login.",
+      "Следующим шагом сайт покажет Callback URL и Verify token для блока Configure webhooks.",
     ],
     fields: [
       { key: "token", label: "Access token", secret: true },
-      { key: "app_secret", label: "Instagram App Secret", secret: true },
+      { key: "app_secret", label: "App Secret", secret: true },
     ],
     manualWebhook: true,
     caution: META_REVIEW,

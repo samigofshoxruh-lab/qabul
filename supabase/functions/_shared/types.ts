@@ -8,6 +8,8 @@ export interface Credentials {
   appSecret?: string;
   phoneNumberId?: string;
   wabaId?: string;
+  /** Аккаунт Instagram для токенов Facebook: у них /me указывает не на него. */
+  accountId?: string;
 }
 
 export interface Identity {

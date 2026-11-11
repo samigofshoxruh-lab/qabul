@@ -1013,3 +1013,41 @@ test("Продление токена Instagram: сбой виден владе�
   assert.equal(fixed.token_hint, "••••9999");
   assert.ok(new Date(fixed.token_expires_at) > new Date(Date.now() + 50 * 86400000));
 });
+
+test("Instagram: токен Facebook (Unified login) находит аккаунт, пишет через graph.facebook.com и не требует продления", async () => {
+  const owner = await newOwner();
+  await addQuestions(owner, [{ type: "text", text: "Как вас зовут?" }]);
+
+  const noAccount = await invoke(owner.client, "channels", { action: "connect", workspace_id: owner.workspace, platform: "instagram", token: "EAA-USER-NO-IG", app_secret: "s" });
+  assert.match(noAccount.error, /нет доступа к аккаунту Instagram/);
+
+  const APP_SECRET = "fb-app-secret";
+  const res = await invoke(owner.client, "channels", { action: "connect", workspace_id: owner.workspace, platform: "instagram", token: "EAA-UNIFIED-TOKEN", app_secret: APP_SECRET });
+  assert.equal(res.channel.external_id, "17841400000000002");
+  assert.equal(res.channel.name, "@school_unified");
+  assert.equal(res.channel.token_expires_at, null, "токен Unified login не истекает");
+  const [subscribe] = await sent("facebook", "17841400000000002/subscribed_apps");
+  assert.equal(subscribe.query.subscribed_fields, "messages,messaging_postbacks");
+
+  // Токен страницы Facebook тоже подходит.
+  const page = await invoke(owner.client, "channels", { action: "connect", workspace_id: owner.workspace, platform: "instagram", token: "EAA-PAGE-TOKEN", app_secret: APP_SECRET });
+  assert.equal(page.channel.external_id, "17841400000000003");
+  assert.equal(page.channel.name, "@school_page");
+
+  const secret = await secretOf(res.channel.id);
+  const body = JSON.stringify({ object: "instagram", entry: [{ id: "17841400000000002", time: 1, messaging: [{ sender: { id: "u-901" }, recipient: { id: "17841400000000002" }, timestamp: 1, message: { mid: "m-u1", text: "Привет" } }] }] });
+  const sig = "sha256=" + crypto.createHmac("sha256", APP_SECRET).update(body).digest("hex");
+  const r = await fetch(fn("webhook", "/meta"), { method: "POST", headers: { "content-type": "application/json", "x-hub-signature-256": sig }, body });
+  assert.equal(r.status, 200);
+  const out = await sent("facebook", "17841400000000002/messages");
+  assert.equal(out.length, 2, "приветствие и вопрос ушли через graph.facebook.com от имени аккаунта Instagram");
+  assert.equal(out[1].body.recipient.id, "u-901");
+  assert.match(out[1].body.message.text, /Как вас зовут/);
+  assert.equal((await sent("instagram", "me/messages")).length, 0);
+  assert.equal(secret.webhook_secret.length > 0, true);
+
+  // Ежечасная проверка такой токен принимает и срок ему не ставит.
+  await cron("refresh-tokens");
+  const { data: rows } = await owner.client.from("channels").select("last_error, token_expires_at").eq("id", res.channel.id).single();
+  assert.deepEqual(rows, { last_error: null, token_expires_at: null });
+});

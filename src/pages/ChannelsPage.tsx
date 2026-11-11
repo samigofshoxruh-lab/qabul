@@ -17,7 +17,7 @@ interface Setup {
 }
 
 const WEBHOOK_FIELDS: Partial<Record<Platform, string>> = {
-  instagram: "В приложении Meta откройте Instagram → API setup with Instagram login → Configure webhooks.",
+  instagram: "В приложении Meta откройте Use cases → Instagram → Customize → блок Configure webhooks. Вставьте адрес и Verify token, нажмите Verify and save, затем включите поле messages.",
   facebook: "В приложении Meta откройте Messenger → Settings → Webhooks.",
   whatsapp: "В приложении Meta откройте WhatsApp → Configuration → Webhook.",
 };
@@ -193,6 +193,9 @@ function ChannelRow({ channel, surveys, onChanged, onReplaceToken }: { channel: 
           </p>
           {channel.platform === "instagram" && channel.token_expires_at && !tokenExpired(channel) && (
             <p className="muted">Токен продлевается автоматически, сейчас действует до {longDate(channel.token_expires_at)}.</p>
+          )}
+          {channel.platform === "instagram" && !channel.token_expires_at && (
+            <p className="muted">Токен без срока действия, продлевать его не нужно.</p>
           )}
           <p className={`channel-status tone-${status.tone}`}>{status.text}</p>
         </div>
