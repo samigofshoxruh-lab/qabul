@@ -31,7 +31,7 @@ function metaError(error: Json, status: number): ChannelError {
 async function call(url: string, token: string, init: { method?: string; body?: unknown; query?: Record<string, string> } = {}): Promise<Json> {
   const target = new URL(url);
   for (const [key, value] of Object.entries(init.query ?? {})) target.searchParams.set(key, value);
-  target.searchParams.set("access_token", token);
+  if (!target.searchParams.has("access_token")) target.searchParams.set("access_token", token);
   const res = await fetch(target, {
     method: init.method ?? "GET",
     headers: init.body ? { "content-type": "application/json" } : undefined,
@@ -181,38 +181,104 @@ interface IgAccount {
 }
 
 /** Аккаунты Instagram, до которых дотягивается токен Facebook: Unified login, токен страницы или пользователя. */
-async function instagramAccountsOf(token: string): Promise<IgAccount[]> {
+async function instagramAccountsOf(token: string, appSecret?: string): Promise<{ accounts: IgAccount[]; notes: string[] }> {
   const found = new Map<string, IgAccount>();
+  const notes: string[] = [];
   const add = (a: Json) => {
     if (a?.id) found.set(String(a.id), { id: String(a.id), username: a.username, name: a.name });
   };
-  const probe = async (url: string, fields: string, pick: (data: Json) => void) => {
+  const probe = async (label: string, url: string, query: Record<string, string>, pick: (data: Json) => string) => {
     try {
-      pick(await call(url, token, { query: { fields } }));
+      notes.push(`${label}: ${pick(await call(url, token, { query }))}`);
     } catch (e) {
       // Код 190 означает плохой токен, остальное означает, что у этого вида токена нет такого поля.
       if (e instanceof ChannelError && /недействителен/.test(e.message)) throw e;
+      notes.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
+  const count = (list: Json[]) => `${list.length}`;
+
   // Unified login: токен системного пользователя, аккаунты назначены ему.
-  await probe(`${FACEBOOK}/me/assigned_instagram_accounts`, "id,username,name", (d) => (d.data ?? []).forEach(add));
-  if (found.size) return [...found.values()];
+  await probe("assigned", `${FACEBOOK}/me/assigned_instagram_accounts`, { fields: "id,username,name" }, (d) => {
+    (d.data ?? []).forEach(add);
+    return count(d.data ?? []);
+  });
+  if (found.size) return { accounts: [...found.values()], notes };
+
+  // Сам токен знает, для каких аккаунтов он выдан: у разрешений instagram_* есть target_ids.
+  // Спрашивать об этом нужно от имени приложения: его id у токена есть, секрет даёт владелец.
+  let appToken = token;
+  if (appSecret) {
+    await probe("app", `${FACEBOOK}/app`, { fields: "id,name" }, (d) => {
+      if (d.id) appToken = `${d.id}|${appSecret}`;
+      return `${d.name ?? "?"} ${d.id ?? ""}`;
+    });
+  }
+  await probe("debug", `${FACEBOOK}/debug_token`, { input_token: token, access_token: appToken }, (d) => {
+    const scopes: Json[] = d.data?.granular_scopes ?? [];
+    const ids = new Set<string>();
+    for (const s of scopes) {
+      if (/^instagram_/.test(String(s.scope))) (s.target_ids ?? []).forEach((id: Json) => ids.add(String(id)));
+    }
+    for (const id of ids) add({ id });
+    return `${d.data?.type ?? "?"}, ids ${[...ids].join(",") || "нет"}`;
+  });
+  if (found.size) {
+    // Имя аккаунта: если Meta не отдаёт, оставим id.
+    for (const account of found.values()) {
+      try {
+        const p = await call(`${FACEBOOK}/${account.id}`, token, { query: { fields: "id,username,name" } });
+        account.username = p.username;
+        account.name = p.name;
+      } catch (e) {
+        notes.push(`${account.id}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    return { accounts: [...found.values()], notes };
+  }
+
   // Токен страницы Facebook.
-  await probe(`${FACEBOOK}/me`, "instagram_business_account{id,username,name}", (d) => add(d.instagram_business_account));
-  if (found.size) return [...found.values()];
+  await probe("me", `${FACEBOOK}/me`, { fields: "id,name,instagram_business_account{id,username,name}" }, (d) => {
+    add(d.instagram_business_account);
+    return `${d.name ?? d.id}${d.instagram_business_account ? " + instagram" : ""}`;
+  });
+  if (found.size) return { accounts: [...found.values()], notes };
+
   // Токен пользователя Facebook: страницы, к которым привязан Instagram.
-  await probe(`${FACEBOOK}/me/accounts`, "instagram_business_account{id,username,name}", (d) =>
-    (d.data ?? []).forEach((p: Json) => add(p.instagram_business_account)));
-  return [...found.values()];
+  await probe("pages", `${FACEBOOK}/me/accounts`, { fields: "name,instagram_business_account{id,username,name}" }, (d) => {
+    (d.data ?? []).forEach((p: Json) => add(p.instagram_business_account));
+    return count(d.data ?? []);
+  });
+  return { accounts: [...found.values()], notes };
+}
+
+/** Проверяет указанный владельцем id: подпиской на события, если Meta не отдаёт профиль. */
+async function instagramAccountById(creds: Credentials): Promise<IgAccount> {
+  const id = creds.accountId!;
+  try {
+    const p = await call(`${FACEBOOK}/${id}`, creds.token, { query: { fields: "id,username,name" } });
+    return { id, username: p.username, name: p.name };
+  } catch {
+    // Профиль может быть закрыт для этого токена, но отправка и подписка при этом работают.
+    const probe = await call(`${FACEBOOK}/${id}/subscribed_apps`, creds.token, { query: { fields: "id" } }).catch((e) => e);
+    if (probe instanceof ChannelError) {
+      throw new ChannelError(`Meta не даёт этому токену доступ к аккаунту ${id}: ${probe.message}`);
+    }
+    return { id };
+  }
 }
 
 export const instagram: Adapter = {
   async identify(creds) {
     if (isFacebookToken(creds.token)) {
-      const accounts = await instagramAccountsOf(creds.token);
+      // Владелец может указать id аккаунта сам: он виден в Meta под названием аккаунта.
+      const { accounts, notes } = creds.accountId
+        ? { accounts: [await instagramAccountById(creds)], notes: [] }
+        : await instagramAccountsOf(creds.token, creds.appSecret);
       if (accounts.length === 0) {
         throw new ChannelError(
-          "У этого токена нет доступа к аккаунту Instagram. В Meta в блоке Generate access tokens выпустите токен для нужного аккаунта.",
+          "У этого токена нет доступа к аккаунту Instagram. В Meta в блоке Generate access tokens выпустите токен для нужного аккаунта. " +
+            `Ответ Meta: ${notes.join("; ")}`,
         );
       }
       if (accounts.length > 1) {

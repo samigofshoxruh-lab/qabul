@@ -1,7 +1,7 @@
 import type { Platform } from "./types";
 
 export interface PlatformField {
-  key: "token" | "app_secret" | "phone_number_id" | "waba_id";
+  key: "token" | "app_secret" | "phone_number_id" | "waba_id" | "account_id";
   label: string;
   placeholder?: string;
   secret?: boolean;
@@ -50,6 +50,7 @@ export const PLATFORMS: Record<Platform, PlatformInfo> = {
     fields: [
       { key: "token", label: "Access token", secret: true },
       { key: "app_secret", label: "App Secret", secret: true },
+      { key: "account_id", label: "Instagram account ID, если сайт не нашёл аккаунт сам", placeholder: "Число под названием аккаунта в блоке Generate access tokens" },
     ],
     manualWebhook: true,
     caution: META_REVIEW,

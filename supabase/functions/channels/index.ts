@@ -75,7 +75,8 @@ async function connect(db: SupabaseClient, body: Record<string, unknown>) {
     throw new ChannelError("Укажите Phone number ID и WhatsApp Business Account ID");
   }
 
-  const creds: Credentials = { token, appSecret, phoneNumberId, wabaId };
+  const accountId = platform === "instagram" ? text(body.account_id)?.replace(/\D/g, "") || undefined : undefined;
+  const creds: Credentials = { token, appSecret, phoneNumberId, wabaId, accountId };
   const identity = await adapters[platform].identify(creds);
 
   const { data: existing, error: findError } = await db.from("channels").select("*")
@@ -120,6 +121,7 @@ async function connect(db: SupabaseClient, body: Record<string, unknown>) {
       ...(previous?.extra ?? {}),
       ...(phoneNumberId ? { phone_number_id: phoneNumberId } : {}),
       ...(wabaId ? { waba_id: wabaId } : {}),
+      ...(accountId ? { account_id: accountId } : {}),
     },
     updated_at: new Date().toISOString(),
   });

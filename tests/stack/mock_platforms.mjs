@@ -65,6 +65,24 @@ export function startMockPlatforms(port) {
           if (token.startsWith("EAA-UNIFIED")) return reply(200, { data: [{ id: "17841400000000002", username: "school_unified", name: "Школа U" }] });
           return reply(400, { error: { code: 100, message: "(#100) Tried accessing nonexisting field (assigned_instagram_accounts)" } });
         }
+        if (url.pathname.endsWith("/app")) return reply(200, { id: "1692970000000000", name: "Qabul" });
+        if (url.pathname.includes("/17841400000000099")) return reply(400, { error: { code: 100, error_subcode: 33, message: "Unsupported get request." } });
+        if (url.pathname.includes("/17841400000000005")) {
+          if (url.pathname.endsWith("/subscribed_apps")) return reply(200, { data: [] });
+          if (url.pathname.endsWith("/messages")) return reply(200, { message_id: `igm-out-${++seq}` });
+          return reply(400, { error: { code: 100, error_subcode: 33, message: "Unsupported get request." } });
+        }
+        if (url.pathname.endsWith("/debug_token")) {
+          if (!(url.searchParams.get("access_token") ?? "").includes("|")) return reply(400, { error: { code: 100, message: "(#100) You must provide an app access token" } });
+          const input = url.searchParams.get("input_token") ?? "";
+          if (input.startsWith("EAA-GRANULAR")) return reply(200, { data: { type: "SYSTEM_USER", granular_scopes: [{ scope: "instagram_manage_messages", target_ids: ["17841400000000004"] }, { scope: "public_profile" }] } });
+          return reply(200, { data: { type: "USER", granular_scopes: [] } });
+        }
+        if (url.pathname.includes("/17841400000000004")) {
+          if (url.pathname.endsWith("/messages")) return reply(200, { recipient_id: body.recipient?.id, message_id: `igg-out-${++seq}` });
+          if (url.pathname.endsWith("/subscribed_apps")) return reply(200, { success: true });
+          return reply(400, { error: { code: 100, error_subcode: 33, message: "Unsupported get request." } });
+        }
         if (url.pathname.includes("/17841400000000002/subscribed_apps")) return reply(200, { success: true });
         if (url.pathname.includes("/17841400000000002/messages")) return reply(200, { recipient_id: body.recipient?.id, message_id: `igu-out-${++seq}` });
         if (url.pathname.endsWith("/me") && token.startsWith("EAA-PAGE")) return reply(200, { id: "1000000000000001", name: "Школа Page", instagram_business_account: { id: "17841400000000003", username: "school_page" } });

@@ -1020,6 +1020,20 @@ test("Instagram: токен Facebook (Unified login) находит аккаун
 
   const noAccount = await invoke(owner.client, "channels", { action: "connect", workspace_id: owner.workspace, platform: "instagram", token: "EAA-USER-NO-IG", app_secret: "s" });
   assert.match(noAccount.error, /нет доступа к аккаунту Instagram/);
+  assert.match(noAccount.error, /Ответ Meta: assigned: .*app: Qabul.*debug: USER.*pages: 0/, "в ошибке видно, что ответила Meta");
+
+  // Владелец сам указал id аккаунта, а профиль по нему Meta не отдаёт.
+  const manual = await invoke(owner.client, "channels", { action: "connect", workspace_id: owner.workspace, platform: "instagram", token: "EAA-USER-NO-IG", app_secret: "s", account_id: "17841400000000005" });
+  assert.equal(manual.channel.external_id, "17841400000000005");
+  assert.equal(manual.channel.name, "Instagram");
+  const wrong = await invoke(owner.client, "channels", { action: "connect", workspace_id: owner.workspace, platform: "instagram", token: "EAA-USER-NO-IG", app_secret: "s", account_id: "17841400000000099" });
+  assert.match(wrong.error, /не даёт этому токену доступ к аккаунту 17841400000000099/);
+
+  // Аккаунт известен только самому токену (granular_scopes), а по id Meta его не отдаёт.
+  const granular = await invoke(owner.client, "channels", { action: "connect", workspace_id: owner.workspace, platform: "instagram", token: "EAA-GRANULAR-TOKEN", app_secret: "s" });
+  assert.equal(granular.channel.external_id, "17841400000000004");
+  assert.equal(granular.channel.name, "Instagram");
+  assert.equal((await sent("facebook", "17841400000000004/subscribed_apps")).length, 1);
 
   const APP_SECRET = "fb-app-secret";
   const res = await invoke(owner.client, "channels", { action: "connect", workspace_id: owner.workspace, platform: "instagram", token: "EAA-UNIFIED-TOKEN", app_secret: APP_SECRET });
